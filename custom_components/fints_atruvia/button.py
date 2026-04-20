@@ -34,8 +34,14 @@ class FintsReAuthButton(CoordinatorEntity[FintsBankingCoordinator], ButtonEntity
     @property
     def available(self) -> bool:
         """Return True only when 2FA confirmation is pending."""
-        return self.coordinator.is_2fa_pending
+        return super().available and self.coordinator.is_2fa_pending
 
     async def async_press(self) -> None:
         """Handle button press by completing the pending re-authentication."""
-        await self.coordinator.async_complete_reauth()
+        if not self.coordinator.is_2fa_pending:
+            return
+        try:
+            await self.coordinator.async_complete_reauth()
+        except Exception as err:
+            from homeassistant.exceptions import HomeAssistantError
+            raise HomeAssistantError(f"Re-authentication failed: {err}") from err
