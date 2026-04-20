@@ -1,3 +1,9 @@
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = String(str ?? "");
+  return div.innerHTML;
+}
+
 class FintsAtruviaCard extends HTMLElement {
   constructor() {
     super();
@@ -75,7 +81,7 @@ class FintsAtruviaCard extends HTMLElement {
       return `
         <ha-card header="Unbekannte Entität">
           <div class="card-content">
-            <p class="error">Entität nicht gefunden: ${entityId}</p>
+            <p class="error">Entität nicht gefunden: ${escapeHtml(entityId)}</p>
           </div>
         </ha-card>`;
     }
@@ -112,7 +118,7 @@ class FintsAtruviaCard extends HTMLElement {
           <div class="${rowClass}">
             <span class="date">${txDate}</span>
             <span class="${txClass}">${txFormatted}</span>
-            <span class="purpose">${purpose}</span>
+            <span class="purpose">${escapeHtml(purpose)}</span>
           </div>`;
       })
       .join("");
@@ -130,11 +136,11 @@ class FintsAtruviaCard extends HTMLElement {
         : `<p class="no-transactions">Keine Transaktionen verfügbar</p>`;
 
     return `
-      <ha-card header="Konto ${last4}">
+      <ha-card header="Konto ${escapeHtml(last4)}">
         <div class="card-content">
-          <div class="account-name">${accountName}</div>
+          <div class="account-name">${escapeHtml(accountName)}</div>
           <div class="${balanceClass}">${balanceFormatted}</div>
-          ${maskedIban ? `<div class="iban">IBAN: ${maskedIban}</div>` : ""}
+          ${maskedIban ? `<div class="iban">IBAN: ${escapeHtml(maskedIban)}</div>` : ""}
           ${warningBanner}
           ${transactionsSection}
         </div>
@@ -142,7 +148,7 @@ class FintsAtruviaCard extends HTMLElement {
   }
 
   _render() {
-    if (!this._config || Object.keys(this._config).length === 0) return;
+    if (!this._config || !this._hass) return;
 
     const entityIds = this._getEntityIds();
     const cards = entityIds.map((id) => this._renderEntity(id)).join("\n");
