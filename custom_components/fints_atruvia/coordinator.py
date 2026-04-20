@@ -6,8 +6,13 @@ from datetime import timedelta
 
 from fints.client import NeedTANResponse
 
+from homeassistant.components.persistent_notification import (
+    async_create as pn_async_create,
+    async_dismiss as pn_async_dismiss,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import FinTsAtruviaClient
@@ -43,11 +48,12 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
         """Fetch data for all selected accounts from the bank."""
         result: dict = {}
         try:
+            # Fetch the account list once before the loop to avoid repeated calls.
+            accounts = await self.hass.async_add_executor_job(
+                self._client.get_accounts
+            )
             for iban in self._selected_accounts:
                 # Resolve the SEPAAccount object for this IBAN
-                accounts = await self.hass.async_add_executor_job(
-                    self._client.get_accounts
-                )
                 account = next(
                     (a for a in accounts if a.iban == iban),
                     None,
@@ -67,33 +73,39 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
                     "currency": currency,
                     "transactions": transactions,
                 }
-        except NeedTANResponse as exc:
-            self._tan_response = exc
+        except NeedTANResponse as e:
+            self._tan_response = e
             self.is_2fa_pending = True
-            self.hass.components.persistent_notification.async_create(
+            pn_async_create(
+                self.hass,
                 message=(
                     "Sparda-Bank fordert Re-Authentifizierung. "
                     "Bitte den Re-Auth-Button in der Integration drücken."
                 ),
                 notification_id="fints_atruvia_reauth",
             )
-            # Return last known good data so sensors stay available
-            return self.data if self.data is not None else {}
+            if self.data is None:
+                raise ConfigEntryAuthFailed("Bank requires initial authentication (TAN)") from e
+            # Intentionally return last known complete data rather than partial result.
+            # Fresh data for already-processed IBANs is discarded to avoid partial state.
+            return self.data
         except Exception as err:
             raise UpdateFailed(f"Error communicating with bank: {err}") from err
 
         # Successful update — clear any pending 2FA state
         self.is_2fa_pending = False
         self._tan_response = None
+        pn_async_dismiss(self.hass, "fints_atruvia_reauth")
         return result
 
-    async def async_complete_reauth(self) -> None:
+    async def async_complete_reauth(self, tan: str = "") -> None:
         """Complete pending re-authentication after the user confirms SecureGo+."""
         if self._tan_response is None:
             return
         await self.hass.async_add_executor_job(
-            self._client.complete_tan, self._tan_response, ""
+            self._client.complete_tan, self._tan_response, tan
         )
         self._tan_response = None
         self.is_2fa_pending = False
+        pn_async_dismiss(self.hass, "fints_atruvia_reauth")
         await self.async_request_refresh()
