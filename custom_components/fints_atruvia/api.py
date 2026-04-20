@@ -16,7 +16,7 @@ _LOGGER = logging.getLogger(__name__)
 
 # Fallback product_id: Atruvia sometimes blocks the python-fints default.
 # This zero-padded ID is accepted by a number of Atruvia instances.
-_FALLBACK_PRODUCT_ID = "00000000000000000000000000001"
+_FALLBACK_PRODUCT_ID = "0000000000000000000000000"  # exactly 25 chars as required by FinTS
 
 
 class FinTsAtruviaClient:
@@ -46,6 +46,7 @@ class FinTsAtruviaClient:
         self._url = url
         self._product_id = product_id or _FALLBACK_PRODUCT_ID
         self._client: FinTS3PinTanClient | None = None
+        self._cached_accounts: list[SEPAAccount] | None = None
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -61,8 +62,7 @@ class FinTsAtruviaClient:
             product_id=self._product_id,
         )
 
-    @property
-    def client(self) -> FinTS3PinTanClient:
+    def _get_client(self) -> FinTS3PinTanClient:
         """Return the active client, creating one if necessary."""
         if self._client is None:
             self._client = self._build_client()
@@ -92,7 +92,9 @@ class FinTsAtruviaClient:
             try:
                 # get_sepa_accounts() is the lightest call that forces a full
                 # dialog open including system-ID synchronisation.
-                self._client.get_sepa_accounts()
+                accounts = self._client.get_sepa_accounts()
+                # Cache the result so get_accounts() avoids a redundant round-trip.
+                self._cached_accounts = accounts
                 return None
             except NeedTANResponse as exc:
                 _LOGGER.debug("TAN required during system-ID init: %s", exc)
@@ -118,7 +120,7 @@ class FinTsAtruviaClient:
                              previous call (init_system_id or a data fetch).
         :param tan: The TAN value, or "" for push/decoupled TANs.
         """
-        self.client.send_tan(tan_response, tan)
+        self._get_client().send_tan(tan_response, tan)
 
     def get_accounts(self) -> list[SEPAAccount]:
         """Return all SEPA accounts accessible with the configured credentials.
@@ -126,7 +128,9 @@ class FinTsAtruviaClient:
         :returns: List of SEPAAccount namedtuples (iban, bic, accountnumber,
                   subaccount, blz).
         """
-        return self.client.get_sepa_accounts()
+        if self._cached_accounts is not None:
+            return self._cached_accounts
+        return self._get_client().get_sepa_accounts()
 
     def get_balance(self, account: SEPAAccount) -> tuple[Decimal, str]:
         """Fetch the current booked balance for a single account.
@@ -135,7 +139,16 @@ class FinTsAtruviaClient:
         :returns: Tuple of (amount: Decimal, currency: str), e.g.
                   (Decimal('1234.56'), 'EUR').
         """
-        balance = self.client.get_balance(account)
+        try:
+            balance = self._get_client().get_balance(account)
+        except NeedTANResponse:
+            raise  # coordinator catches this to set 2fa_pending
+
+        if balance is None or balance.amount is None:
+            raise ValueError(
+                f"No balance data returned for account {account.iban}"
+            )
+
         # get_balance() returns an mt940.models.Balance object whose .amount
         # attribute is an mt940.models.Amount with .amount (Decimal) and
         # .currency (str).
@@ -160,17 +173,26 @@ class FinTsAtruviaClient:
         end_date = datetime.date.today()
         start_date = end_date - datetime.timedelta(days=days)
 
-        raw = self.client.get_transactions(
-            account,
-            start_date=start_date,
-            end_date=end_date,
-        )
+        try:
+            raw = self._get_client().get_transactions(
+                account,
+                start_date=start_date,
+                end_date=end_date,
+            )
+        except NeedTANResponse:
+            raise  # coordinator catches this to set 2fa_pending
 
         result: list[dict] = []
         for txn in raw:
             # Both mt940.models.Transaction and fints.models.Transaction
             # expose their data via a .data dict.
-            data: dict = txn.data if hasattr(txn, "data") else {}
+            if not hasattr(txn, "data"):
+                _LOGGER.warning(
+                    "Skipping malformed transaction with no .data attribute: %r", txn
+                )
+                continue
+
+            data: dict = txn.data
 
             amount_obj = data.get("amount")
             if amount_obj is not None:
@@ -187,9 +209,10 @@ class FinTsAtruviaClient:
             # The counterpart name is stored under "applicant_name" in mt940
             applicant_name = data.get("applicant_name", "") or ""
 
+            raw_date = data.get("date")
             result.append(
                 {
-                    "date": data.get("date"),
+                    "date": raw_date.isoformat() if raw_date else None,
                     "amount": amount_value,
                     "currency": currency_value,
                     "purpose": str(transaction_details).strip(),
