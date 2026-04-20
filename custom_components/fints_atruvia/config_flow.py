@@ -85,6 +85,8 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors["custom_url"] = "required"
             else:
                 self._credentials = user_input
+                await self.async_set_unique_id(f"{user_input['blz']}_{user_input['username']}")
+                self._abort_if_unique_id_configured()
                 return await self.async_step_sync()
 
         return self.async_show_form(
@@ -101,6 +103,8 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Perform FinTS system-ID handshake — runs automatically, no form shown."""
+        if not self._credentials:
+            return await self.async_step_user()
         creds = self._credentials
 
         # Resolve the effective URL
@@ -189,8 +193,21 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
                     else creds["url"]
                 )
 
+                bank_label = next(
+                    (
+                        opt["label"]
+                        for opt in _BANK_URL_OPTIONS
+                        if opt["value"] == creds.get("url")
+                    ),
+                    None,
+                )
+                title = (
+                    f"{bank_label} ({creds['blz']})"
+                    if bank_label
+                    else f"Spardabank ({creds['blz']})"
+                )
                 return self.async_create_entry(
-                    title=creds["blz"],
+                    title=title,
                     data={
                         "blz": creds["blz"],
                         "username": creds["username"],
@@ -224,7 +241,7 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
         account_options = [
             selector.SelectOptionDict(
                 value=account.iban,
-                label=f"{account.owner_name} ({account.iban})",
+                label=f"{account.iban} ({account.accountnumber})",
             )
             for account in accounts
         ]
