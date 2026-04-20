@@ -1,0 +1,12 @@
+{
+  "domain": "fints_atruvia",
+  "name": "FinTS Atruvia",
+  "version": "0.1.0",
+  "documentation": "https://github.com/yourusername/fints-atruvia",
+  "requirements": ["python-fints>=3.1"],
+  "dependencies": [],
+  "codeowners": [],
+  "iot_class": "cloud_polling",
+  "config_flow": true,
+  "homeassistant": "2026.3.2"
+}
