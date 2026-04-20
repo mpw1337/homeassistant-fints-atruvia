@@ -18,9 +18,10 @@ async def async_setup_entry(
 ) -> None:
     """Set up fints_atruvia sensor entities from a config entry."""
     coordinator: FintsBankingCoordinator = hass.data[DOMAIN][config_entry.entry_id]
+    selected_ibans: list[str] = config_entry.data.get("selected_accounts", [])
     async_add_entities([
         FintsBankingSensor(coordinator, iban)
-        for iban in (coordinator.data or {})
+        for iban in selected_ibans
     ])
 
 
@@ -40,6 +41,8 @@ class FintsBankingSensor(CoordinatorEntity[FintsBankingCoordinator], SensorEntit
     @property
     def native_value(self):
         """Return the current account balance."""
+        if not self.coordinator.data:
+            return None
         balance = self.coordinator.data.get(self._iban, {}).get("balance")
         return float(balance) if balance is not None else None
 
@@ -51,6 +54,8 @@ class FintsBankingSensor(CoordinatorEntity[FintsBankingCoordinator], SensorEntit
     @property
     def extra_state_attributes(self) -> dict:
         """Return additional state attributes."""
+        if not self.coordinator.data:
+            return {}
         account_data = self.coordinator.data.get(self._iban, {})
         transactions = account_data.get("transactions", [])
         return {

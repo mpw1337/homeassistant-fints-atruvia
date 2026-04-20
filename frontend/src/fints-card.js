@@ -38,11 +38,11 @@ class FintsAtruviaCard extends HTMLElement {
     return [this._config.entity];
   }
 
-  _formatCurrency(amount) {
+  _formatCurrency(amount, currency = "EUR") {
     if (amount == null) return "–";
     return new Intl.NumberFormat("de-DE", {
       style: "currency",
-      currency: "EUR",
+      currency: currency,
     }).format(amount);
   }
 
@@ -87,10 +87,11 @@ class FintsAtruviaCard extends HTMLElement {
     }
 
     const attr = stateObj.attributes || {};
+    const currency = attr.unit_of_measurement || "EUR";
     const balance = parseFloat(stateObj.state);
     const isNegative = !isNaN(balance) && balance < 0;
     const balanceClass = isNegative ? "balance negative" : "balance positive";
-    const balanceFormatted = isNaN(balance) ? stateObj.state : this._formatCurrency(balance);
+    const balanceFormatted = isNaN(balance) ? stateObj.state : this._formatCurrency(balance, currency);
 
     const iban = attr.iban || "";
     const maskedIban = iban ? this._maskIban(iban) : "";
@@ -110,7 +111,7 @@ class FintsAtruviaCard extends HTMLElement {
       .map((tx, i) => {
         const txAmount = parseFloat(tx.amount);
         const txClass = !isNaN(txAmount) && txAmount < 0 ? "amount negative" : "amount positive";
-        const txFormatted = isNaN(txAmount) ? tx.amount : this._formatCurrency(txAmount);
+        const txFormatted = isNaN(txAmount) ? tx.amount : this._formatCurrency(txAmount, currency);
         const txDate = this._formatDate(tx.date || tx.booking_date || tx.booking_datetime);
         const purpose = this._truncate(tx.purpose || tx.reference || tx.creditor_name || "–", 40);
         const rowClass = i % 2 === 0 ? "transaction even" : "transaction odd";
