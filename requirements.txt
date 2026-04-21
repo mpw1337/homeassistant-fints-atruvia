@@ -1,2 +1,2 @@
-python-fints>=3.1
+python-fints>=5.0.0
 pytest-homeassistant-custom-component
