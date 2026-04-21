@@ -1,0 +1,13 @@
+{
+  "name": "fints-atruvia-card",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "rollup -c",
+    "watch": "rollup -c -w"
+  },
+  "devDependencies": {
+    "rollup": "^4"
+  }
+}
