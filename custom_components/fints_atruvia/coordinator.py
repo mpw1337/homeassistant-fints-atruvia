@@ -32,6 +32,7 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
             name=DOMAIN,
             update_interval=timedelta(hours=6),
         )
+        self.config_entry = config_entry
         data = config_entry.data
         self._client = FinTsAtruviaClient(
             blz=data["blz"],
@@ -78,6 +79,7 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
             self.is_2fa_pending = True
             pn_async_create(
                 self.hass,
+                title="FinTS Atruvia",
                 message=(
                     "Sparda-Bank fordert Re-Authentifizierung. "
                     "Bitte den Re-Auth-Button in der Integration drücken."
