@@ -20,7 +20,7 @@ async def async_setup_entry(
     coordinator: FintsBankingCoordinator = hass.data[DOMAIN][config_entry.entry_id]
     async_add_entities([
         FintsBankingSensor(coordinator, iban)
-        for iban in coordinator.data
+        for iban in (coordinator.data or {})
     ])
 
 
@@ -40,7 +40,8 @@ class FintsBankingSensor(CoordinatorEntity[FintsBankingCoordinator], SensorEntit
     @property
     def native_value(self):
         """Return the current account balance."""
-        return self.coordinator.data.get(self._iban, {}).get("balance")
+        balance = self.coordinator.data.get(self._iban, {}).get("balance")
+        return float(balance) if balance is not None else None
 
     @property
     def native_unit_of_measurement(self) -> str:
@@ -54,6 +55,9 @@ class FintsBankingSensor(CoordinatorEntity[FintsBankingCoordinator], SensorEntit
         transactions = account_data.get("transactions", [])
         return {
             "iban": self._iban,
-            "transactions": transactions[-10:],
+            "transactions": [
+                {**txn, "amount": float(txn["amount"])} if txn.get("amount") is not None else txn
+                for txn in transactions[-10:]
+            ],
             "2fa_pending": self.coordinator.is_2fa_pending,
         }
