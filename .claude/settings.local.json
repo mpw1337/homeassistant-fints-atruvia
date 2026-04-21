@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(gh api *)",
+      "Bash(gh search *)",
+      "Bash(git *)",
+      "Bash(curl -sf \"https://raw.githubusercontent.com/ludeeus/integration_blueprint/main/scripts/develop\" -o /home/markus/projects/ha-development/scripts/develop)",
+      "Bash(chmod +x /home/markus/projects/ha-development/scripts/develop)",
+      "Bash(curl *)",
+      "Bash(python3 -c \"import mt940; b = mt940.models.Balance\\(\\); help\\(mt940.models.Balance\\)\")",
+      "Bash(pip show *)",
+      "Bash(python3 -c \"import mt940.models; b = mt940.models.Balance; print\\(dir\\(b\\)\\)\")",
+      "Bash(python3 -c \"import sys; sys.path.insert\\(0,'/home/markus/projects/ha-development'\\); import mt940; print\\(dir\\(mt940.models.Balance\\(\\)\\)\\)\")",
+      "Bash(pip3 show *)",
+      "Bash(python3 -c \"from fints.models import SEPAAccount; help\\(SEPAAccount\\)\")",
+      "Bash(python3 -c \"import fints; print\\(fints.__file__\\)\")",
+      "Bash(npm install *)",
+      "Bash(npm run *)",
+      "Bash(pip3 list *)",
+      "Bash(pip list *)",
+      "Bash(python3 -m pytest tests/ -v)",
+      "Bash(pip install *)",
+      "Bash(pip index *)",
+      "Bash(pip download *)",
+      "Bash(python3 -c \"import urllib.request, json; data=json.loads\\(urllib.request.urlopen\\('https://pypi.org/pypi/homeassistant/json'\\).read\\(\\)\\); print\\('Requires-Python:', data['info']['requires_python']\\)\")"
+    ]
+  }
+}
