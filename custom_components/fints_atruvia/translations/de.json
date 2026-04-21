@@ -1,1 +1,35 @@
-{}
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "FinTS Atruvia einrichten",
+        "data": {
+          "blz": "Bankleitzahl",
+          "username": "NetKey / Benutzername",
+          "password": "PIN",
+          "url": "Bank",
+          "custom_url": "Manuelle FinTS-URL",
+          "product_id": "Produkt-ID (optional)"
+        }
+      },
+      "2fa": {
+        "title": "Bestätigung erforderlich",
+        "description": "Bitte öffne deine SecureGo+ App und bestätige die Anmeldung. Klicke danach auf **Weiter**."
+      },
+      "accounts": {
+        "title": "Konten auswählen",
+        "data": {
+          "selected_accounts": "Konten"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Verbindung zur Bank fehlgeschlagen. Bitte Zugangsdaten und URL prüfen.",
+      "no_accounts_found": "Keine Konten gefunden.",
+      "unknown": "Unbekannter Fehler."
+    },
+    "abort": {
+      "already_configured": "Diese Bank ist bereits eingerichtet."
+    }
+  }
+}
