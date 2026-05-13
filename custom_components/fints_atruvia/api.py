@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import datetime
 import logging
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
+from typing import Any
 
 from fints.client import FinTS3PinTanClient, NeedTANResponse
 from fints.models import SEPAAccount
@@ -21,6 +22,85 @@ class TanRequiredError(Exception):
     def __init__(self, response: NeedTANResponse) -> None:
         super().__init__("Bank requires TAN authentication")
         self.response = response
+
+
+def _safe_decimal(value: Any) -> Decimal | None:
+    """Best-effort conversion of *value* to Decimal, returning None on failure.
+
+    Banks sometimes deliver optional HISAL fields as datagroups whose inner
+    amount is an empty string or otherwise non-numeric. Falling back to None
+    keeps the coordinator alive instead of crashing the whole update.
+    """
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return value
+    text = str(value).strip()
+    if text == "":
+        return None
+    try:
+        return Decimal(text)
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _balance_to_signed_decimal(balance_obj: Any) -> Decimal | None:
+    """Convert a Balance1/Balance2 object into a signed Decimal.
+
+    Balance1 (HISAL5): credit_debit + direct ``amount`` (Decimal) + ``currency``.
+    Balance2 (HISAL6/7): credit_debit + ``amount`` (Amount1 with .amount + .currency).
+    """
+    if balance_obj is None:
+        return None
+
+    amount_attr = getattr(balance_obj, "amount", None)
+    if amount_attr is None:
+        return None
+
+    # Balance2 wraps amount in an Amount1 (which has its own .amount attribute).
+    inner = amount_attr.amount if hasattr(amount_attr, "amount") else amount_attr
+    raw = _safe_decimal(inner)
+    if raw is None:
+        return None
+
+    cd_field = getattr(balance_obj, "credit_debit", None)
+    cd_value = getattr(cd_field, "value", cd_field)  # CodeField has .value, may already be str
+    return -raw if str(cd_value) == "D" else raw
+
+
+def _amount_obj_to_decimal(amount_obj: Any) -> Decimal | None:
+    """Extract the numeric value from an Amount1 datagroup."""
+    if amount_obj is None:
+        return None
+    return _safe_decimal(getattr(amount_obj, "amount", None))
+
+
+def _extract_booking_date(hisal_segment: Any) -> datetime.date | None:
+    """Return the booking date from a HISAL segment.
+
+    HISAL5 uses ``booking_date`` (a date), HISAL6/7 use ``booking_timestamp``
+    (a Timestamp1 with ``.date``).
+    """
+    timestamp = getattr(hisal_segment, "booking_timestamp", None)
+    if timestamp is not None and hasattr(timestamp, "date"):
+        return timestamp.date
+    return getattr(hisal_segment, "booking_date", None)
+
+
+class _ExtendedFinTSClient(FinTS3PinTanClient):
+    """python-fints subclass that returns the full HISAL segment from get_balance.
+
+    The default ``_get_balance`` callback only extracts the booked balance via
+    ``balance_booked.as_mt940_Balance()`` and discards the other HISAL fields
+    (available amount, pending balance, credit line, etc.). We override it to
+    return the raw segment so :class:`FinTsAtruviaClient.get_balance` can read
+    the extended fields the bank delivers.
+    """
+
+    def _get_balance(self, command_seg, response):  # type: ignore[override]
+        for resp in response.response_segments(command_seg, "HISAL"):
+            return resp
+        return None
 
 # Fallback product_id: Atruvia sometimes blocks the python-fints default.
 # This zero-padded ID is accepted by a number of Atruvia instances.
@@ -62,7 +142,7 @@ class FinTsAtruviaClient:
 
     def _build_client(self) -> FinTS3PinTanClient:
         """Create a fresh FinTS3PinTanClient instance."""
-        return FinTS3PinTanClient(
+        return _ExtendedFinTSClient(
             bank_identifier=self._blz,
             user_id=self._login,
             pin=self._pin,
@@ -184,28 +264,64 @@ class FinTsAtruviaClient:
             return self._cached_accounts
         return self._get_client().get_sepa_accounts()
 
-    def get_balance(self, account: SEPAAccount) -> tuple[Decimal, str]:
-        """Fetch the current booked balance for a single account.
+    def get_balance(self, account: SEPAAccount) -> dict:
+        """Fetch the booked balance plus optional extended fields for a single account.
+
+        Uses :class:`_ExtendedFinTSClient` to access the full HISAL segment.
+        Fields that the bank does not deliver come back as ``None``.
 
         :param account: SEPAAccount as returned by get_accounts().
-        :returns: Tuple of (amount: Decimal, currency: str), e.g.
-                  (Decimal('1234.56'), 'EUR').
-        """
-        balance = self._get_client().get_balance(account)
-        if isinstance(balance, NeedTANResponse):
-            raise TanRequiredError(balance)
+        :returns: Dict with the following keys:
 
-        if balance is None or balance.amount is None:
+            * ``balance`` (Decimal): signed booked balance
+            * ``currency`` (str): ISO 4217 currency code
+            * ``available_balance`` (Decimal | None): available amount incl. dispo
+            * ``balance_pending`` (Decimal | None): signed balance incl. pending bookings
+            * ``pending_amount`` (Decimal | None): difference (balance_pending - balance)
+            * ``booking_date`` (datetime.date | None): booking date of the balance
+        """
+        segment = self._get_client().get_balance(account)
+        if isinstance(segment, NeedTANResponse):
+            raise TanRequiredError(segment)
+        if segment is None:
             raise ValueError(
                 f"No balance data returned for account {account.iban}"
             )
 
-        # get_balance() returns an mt940.models.Balance object whose .amount
-        # attribute is an mt940.models.Amount with .amount (Decimal) and
-        # .currency (str).
-        amount: Decimal = balance.amount.amount
-        currency: str = balance.amount.currency
-        return amount, currency
+        balance = _balance_to_signed_decimal(getattr(segment, "balance_booked", None))
+        if balance is None:
+            raise ValueError(
+                f"No booked balance in HISAL response for account {account.iban}"
+            )
+
+        balance_pending = _balance_to_signed_decimal(
+            getattr(segment, "balance_pending", None)
+        )
+        available_balance = _amount_obj_to_decimal(
+            getattr(segment, "available_amount", None)
+        )
+
+        currency: str = getattr(segment, "currency", "") or ""
+        if not currency:
+            # Balance2 stores currency on the inner Amount1.
+            booked = getattr(segment, "balance_booked", None)
+            inner_amount = getattr(booked, "amount", None) if booked is not None else None
+            currency = getattr(inner_amount, "currency", "") or ""
+
+        pending_amount = (
+            balance_pending - balance
+            if balance_pending is not None and balance is not None
+            else None
+        )
+
+        return {
+            "balance": balance,
+            "currency": currency,
+            "available_balance": available_balance,
+            "balance_pending": balance_pending,
+            "pending_amount": pending_amount,
+            "booking_date": _extract_booking_date(segment),
+        }
 
     def get_transactions(
         self, account: SEPAAccount, days: int = 30
@@ -246,9 +362,11 @@ class FinTsAtruviaClient:
 
             amount_obj = data.get("amount")
             if amount_obj is not None:
-                # mt940 Amount object: .amount (Decimal), .currency (str)
-                amount_value: Decimal = getattr(amount_obj, "amount", Decimal("0"))
-                currency_value: str = getattr(amount_obj, "currency", "")
+                # mt940 Amount object: .amount (Decimal), .currency (str).
+                # Use _safe_decimal so empty/garbled amounts fall back to 0
+                # instead of contaminating the transactions list with strings.
+                amount_value = _safe_decimal(getattr(amount_obj, "amount", None)) or Decimal("0")
+                currency_value: str = getattr(amount_obj, "currency", "") or ""
             else:
                 amount_value = Decimal("0")
                 currency_value = ""
