@@ -14,9 +14,17 @@ from fints.models import SEPAAccount
 
 _LOGGER = logging.getLogger(__name__)
 
+
+class TanRequiredError(Exception):
+    """Raised when the bank returns a NeedTANResponse instead of data."""
+
+    def __init__(self, response: NeedTANResponse) -> None:
+        super().__init__("Bank requires TAN authentication")
+        self.response = response
+
 # Fallback product_id: Atruvia sometimes blocks the python-fints default.
 # This zero-padded ID is accepted by a number of Atruvia instances.
-_FALLBACK_PRODUCT_ID = "0000000000000000000000000"  # exactly 25 chars as required by FinTS
+_FALLBACK_PRODUCT_ID = "6151256F3D4F9975B877BD4A2"  # exactly 25 chars as required by FinTS
 
 
 class FinTsAtruviaClient:
@@ -75,39 +83,76 @@ class FinTsAtruviaClient:
     def init_system_id(self) -> NeedTANResponse | None:
         """Initialise the FinTS system-ID / open the first dialog.
 
-        The first real dialog with Atruvia triggers system-ID synchronisation
-        (HKSYN). Depending on the bank's TAN method this may:
+        Follows the python-fints quickstart pattern for PSD2/SCA banks:
 
-        * Succeed silently  → returns None
-        * Require a TAN     → returns the NeedTANResponse (caller must call
-                              complete_tan() afterwards)
+        1. ``fetch_tan_mechanisms()`` to discover available TAN methods. For
+           SCA-enforced Atruvia instances this raises ``ValueError`` (the
+           bank withholds HISYN4 until SCA), but populates
+           ``allowed_security_functions`` and the BPD as a side effect.
+        2. Pick a two-step mechanism so the subsequent signed dialog uses
+           SCA-compatible authentication.
+        3. Pick a TAN medium if the bank requires one.
+        4. Open a standing dialog. python-fints captures any SCA challenge
+           in ``client.init_tan_response``.
 
-        A ValueError ('Could not find system_id') is retried once because
-        some Atruvia instances need a second attempt after the TAN mechanism
-        has been negotiated.
+        Returns ``None`` if no SCA was required (accounts cached, dialog
+        closed) or a ``NeedTANResponse`` if SCA is pending. In the latter
+        case the standing dialog stays open and the caller MUST call
+        ``complete_tan()`` to finish setup.
         """
-        self._client = self._build_client()
-
-        def _try_init() -> NeedTANResponse | None:
-            try:
-                # get_sepa_accounts() is the lightest call that forces a full
-                # dialog open including system-ID synchronisation.
-                accounts = self._client.get_sepa_accounts()
-                # Cache the result so get_accounts() avoids a redundant round-trip.
-                self._cached_accounts = accounts
-                return None
-            except NeedTANResponse as exc:
-                _LOGGER.debug("TAN required during system-ID init: %s", exc)
-                return exc
+        client = self._build_client()
+        self._client = client
 
         try:
-            return _try_init()
+            client.fetch_tan_mechanisms()
         except ValueError as exc:
-            _LOGGER.warning(
-                "ValueError during system-ID init, retrying once: %s", exc
+            _LOGGER.debug(
+                "fetch_tan_mechanisms raised ValueError "
+                "(expected for SCA banks): %s",
+                exc,
             )
-            self._client = self._build_client()
-            return _try_init()
+
+        # If only the one-step mechanism is selected, upgrade to the first
+        # available two-step mechanism so the signed dialog can perform SCA.
+        if client.get_current_tan_mechanism() in (None, "999"):
+            for sec_func in client.get_tan_mechanisms():
+                if sec_func != "999":
+                    client.set_tan_mechanism(sec_func)
+                    break
+
+        if client.selected_tan_medium is None and client.is_tan_media_required():
+            _, media = client.get_tan_media()
+            if media:
+                client.set_tan_medium(media[0])
+            else:
+                # Workaround for banks that signal "no medium needed" via
+                # empty list (see minimal_interactive_cli_bootstrap).
+                client.selected_tan_medium = ""
+
+        client.__enter__()
+        keep_open = False
+        try:
+            if client.init_tan_response is not None:
+                _LOGGER.debug(
+                    "SCA challenge during system-ID init: %s",
+                    client.init_tan_response,
+                )
+                keep_open = True
+                return client.init_tan_response
+            self._cached_accounts = client.get_sepa_accounts()
+            return None
+        finally:
+            if not keep_open:
+                self._close_standing_dialog()
+
+    def _close_standing_dialog(self) -> None:
+        """Close the client's standing dialog if one is open."""
+        if self._client is None or self._client._standing_dialog is None:
+            return
+        try:
+            self._client.__exit__(None, None, None)
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug("Error closing FinTS dialog", exc_info=True)
 
     def complete_tan(self, tan_response: NeedTANResponse, tan: str = "") -> None:
         """Complete a pending two-factor authentication challenge.
@@ -120,7 +165,14 @@ class FinTsAtruviaClient:
                              previous call (init_system_id or a data fetch).
         :param tan: The TAN value, or "" for push/decoupled TANs.
         """
-        self._get_client().send_tan(tan_response, tan)
+        client = self._get_client()
+        try:
+            client.send_tan(tan_response, tan)
+            # After SCA, system-ID is assigned. Cache accounts while the
+            # dialog is still open so the next caller does not re-open one.
+            self._cached_accounts = client.get_sepa_accounts()
+        finally:
+            self._close_standing_dialog()
 
     def get_accounts(self) -> list[SEPAAccount]:
         """Return all SEPA accounts accessible with the configured credentials.
@@ -139,10 +191,9 @@ class FinTsAtruviaClient:
         :returns: Tuple of (amount: Decimal, currency: str), e.g.
                   (Decimal('1234.56'), 'EUR').
         """
-        try:
-            balance = self._get_client().get_balance(account)
-        except NeedTANResponse:
-            raise  # coordinator catches this to set 2fa_pending
+        balance = self._get_client().get_balance(account)
+        if isinstance(balance, NeedTANResponse):
+            raise TanRequiredError(balance)
 
         if balance is None or balance.amount is None:
             raise ValueError(
@@ -173,14 +224,13 @@ class FinTsAtruviaClient:
         end_date = datetime.date.today()
         start_date = end_date - datetime.timedelta(days=days)
 
-        try:
-            raw = self._get_client().get_transactions(
-                account,
-                start_date=start_date,
-                end_date=end_date,
-            )
-        except NeedTANResponse:
-            raise  # coordinator catches this to set 2fa_pending
+        raw = self._get_client().get_transactions(
+            account,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        if isinstance(raw, NeedTANResponse):
+            raise TanRequiredError(raw)
 
         result: list[dict] = []
         for txn in raw:

@@ -17,12 +17,8 @@ _LOGGER = logging.getLogger(__name__)
 
 _BANK_URL_OPTIONS = [
     selector.SelectOptionDict(
-        value="https://banking.sparda-sw.de/fints30",
-        label="Spardabank SW",
-    ),
-    selector.SelectOptionDict(
-        value="https://banking.sparda-bw.de/fints30",
-        label="Spardabank BW",
+        value="https://fints2.atruvia.de/cgi-bin/hbciservlet",
+        label="Sparda-Bank (Atruvia)",
     ),
     selector.SelectOptionDict(
         value="custom",
@@ -204,7 +200,7 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
                 title = (
                     f"{bank_label} ({creds['blz']})"
                     if bank_label
-                    else f"Spardabank ({creds['blz']})"
+                    else f"Sparda-Bank ({creds['blz']})"
                 )
                 return self.async_create_entry(
                     title=title,

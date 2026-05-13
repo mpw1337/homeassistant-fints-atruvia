@@ -4,8 +4,6 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 
-from fints.client import NeedTANResponse
-
 from homeassistant.components.persistent_notification import (
     async_create as pn_async_create,
     async_dismiss as pn_async_dismiss,
@@ -15,7 +13,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .api import FinTsAtruviaClient
+from .api import FinTsAtruviaClient, TanRequiredError
 from . import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
@@ -42,7 +40,7 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
             product_id=data.get("product_id") or None,
         )
         self._selected_accounts: list[str] = data.get("selected_accounts", [])
-        self._tan_response: NeedTANResponse | None = None
+        self._tan_response = None
         self.is_2fa_pending: bool = False
 
     async def _async_update_data(self) -> dict:
@@ -74,8 +72,8 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
                     "currency": currency,
                     "transactions": transactions,
                 }
-        except NeedTANResponse as e:
-            self._tan_response = e
+        except TanRequiredError as e:
+            self._tan_response = e.response
             self.is_2fa_pending = True
             pn_async_create(
                 self.hass,
@@ -87,7 +85,7 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
                 notification_id="fints_atruvia_reauth",
             )
             if self.data is None:
-                raise ConfigEntryAuthFailed("Bank requires initial authentication (TAN)") from e
+                raise ConfigEntryAuthFailed("Bank requires initial authentication (TAN)") from e.response
             # Intentionally return last known complete data rather than partial result.
             # Fresh data for already-processed IBANs is discarded to avoid partial state.
             return self.data
