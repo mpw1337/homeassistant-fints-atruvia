@@ -2,9 +2,9 @@
 
 Verbindet Home Assistant mit deutschen Spardabanken (Atruvia-Backend) via FinTS/HBCI. Zeigt Kontostände und Transaktionen als Sensoren und bringt eine eigene Lovelace-Karte mit.
 
-**Unterstützte Banken:**
-- Spardabank SW
-- Spardabank BW
+**Unterstützte Banken (via Atruvia):**
+- Sparda-Bank Südwest
+- Sparda-Bank Baden-Württemberg
 
 ---
 
@@ -35,7 +35,7 @@ Home Assistant neu starten.
    - Bankleitzahl (BLZ)
    - NetKey / Benutzername
    - PIN
-   - Bank auswählen (Sparda SW / Sparda BW)
+   - Bank auswählen: "Sparda-Bank (Atruvia)" für Sparda SW oder BW
 3. Falls die Bank eine Bestätigung anfordert: **SecureGo+ App öffnen**, Anmeldung bestätigen, dann auf **Weiter** klicken
 4. Konten auswählen, die überwacht werden sollen
 
