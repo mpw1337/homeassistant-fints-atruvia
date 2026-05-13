@@ -104,6 +104,31 @@ class FintsAtruviaCard extends HTMLElement {
 
     const twoPending = attr["2fa_pending"] === true || attr["2fa_pending"] === "true";
 
+    const availableBalance =
+      typeof attr.available_balance === "number" ? attr.available_balance : null;
+    const pendingAmount =
+      typeof attr.pending_amount === "number" ? attr.pending_amount : null;
+
+    const detailRows = [];
+    if (availableBalance !== null) {
+      detailRows.push(`
+        <div class="detail-row">
+          <span class="detail-label">Verfügbar</span>
+          <span class="detail-value">${this._formatCurrency(availableBalance, currency)}</span>
+        </div>`);
+    }
+    if (pendingAmount !== null && pendingAmount !== 0) {
+      const pendingClass = pendingAmount < 0 ? "detail-value negative" : "detail-value positive";
+      detailRows.push(`
+        <div class="detail-row">
+          <span class="detail-label">Vorgemerkt</span>
+          <span class="${pendingClass}">${this._formatCurrency(pendingAmount, currency)}</span>
+        </div>`);
+    }
+    const balanceDetails = detailRows.length
+      ? `<div class="balance-details">${detailRows.join("")}</div>`
+      : "";
+
     const transactions = Array.isArray(attr.transactions) ? attr.transactions : [];
     const lastFive = transactions.slice(0, 5);
 
@@ -141,6 +166,7 @@ class FintsAtruviaCard extends HTMLElement {
         <div class="card-content">
           <div class="account-name">${escapeHtml(accountName)}</div>
           <div class="${balanceClass}">${balanceFormatted}</div>
+          ${balanceDetails}
           ${maskedIban ? `<div class="iban">IBAN: ${escapeHtml(maskedIban)}</div>` : ""}
           ${warningBanner}
           ${transactionsSection}
@@ -183,6 +209,30 @@ class FintsAtruviaCard extends HTMLElement {
           color: var(--success-color, #43a047);
         }
         .balance.negative {
+          color: var(--error-color, #db4437);
+        }
+        .balance-details {
+          margin: -4px 0 8px;
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+        }
+        .detail-row {
+          display: flex;
+          justify-content: space-between;
+          font-size: 0.85rem;
+          color: var(--secondary-text-color, #727272);
+        }
+        .detail-label {
+          color: var(--secondary-text-color, #727272);
+        }
+        .detail-value {
+          font-variant-numeric: tabular-nums;
+        }
+        .detail-value.positive {
+          color: var(--success-color, #43a047);
+        }
+        .detail-value.negative {
           color: var(--error-color, #db4437);
         }
         .iban {
