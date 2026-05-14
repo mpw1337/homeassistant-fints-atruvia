@@ -2,13 +2,23 @@
 
 This module provides a synchronous wrapper around the python-fints library.
 All methods are blocking and intended to be called via hass.async_add_executor_job().
+
+Security model
+--------------
+The PIN is supplied lazily via a ``pin_provider`` callable rather than stored
+as an instance attribute. python-fints itself still holds the PIN internally
+once a client is constructed (we can't change that), but our wrapper keeps
+PIN exposure tightly scoped to the lifetime of an active FinTS dialog: when
+``close()`` is called the underlying client is dropped and the only remaining
+reference is the wrapper's bound provider (a closure that re-reads from the
+encrypted store on demand).
 """
 from __future__ import annotations
 
 import datetime
 import logging
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Any, Callable
 
 from fints.client import FinTS3PinTanClient, NeedTANResponse
 from fints.models import SEPAAccount
@@ -22,6 +32,10 @@ class TanRequiredError(Exception):
     def __init__(self, response: NeedTANResponse) -> None:
         super().__init__("Bank requires TAN authentication")
         self.response = response
+
+
+class InvalidUrlError(ValueError):
+    """Raised when a FinTS endpoint URL is not an https:// URL."""
 
 
 def _safe_decimal(value: Any) -> Decimal | None:
@@ -124,15 +138,24 @@ class FinTsAtruviaClient:
         self,
         blz: str,
         login: str,
-        pin: str,
+        pin_provider: Callable[[], str],
         url: str,
         product_id: str | None = None,
+        fints_state: bytes | None = None,
     ) -> None:
+        if not url.lower().startswith("https://"):
+            raise InvalidUrlError(
+                "FinTS endpoint URL must use https://. Plain http would "
+                "leak the PIN in transit."
+            )
         self._blz = blz
         self._login = login
-        self._pin = pin
+        # Lazy callable rather than a stored string: lets the coordinator
+        # decrypt the PIN on demand and keep it out of long-lived attributes.
+        self._pin_provider = pin_provider
         self._url = url
         self._product_id = product_id or _FALLBACK_PRODUCT_ID
+        self._fints_state = fints_state
         self._client: FinTS3PinTanClient | None = None
         self._cached_accounts: list[SEPAAccount] | None = None
 
@@ -141,20 +164,51 @@ class FinTsAtruviaClient:
     # ------------------------------------------------------------------
 
     def _build_client(self) -> FinTS3PinTanClient:
-        """Create a fresh FinTS3PinTanClient instance."""
-        return _ExtendedFinTSClient(
-            bank_identifier=self._blz,
-            user_id=self._login,
-            pin=self._pin,
-            server=self._url,
-            product_id=self._product_id,
-        )
+        """Create a fresh FinTS3PinTanClient instance.
+
+        The PIN is requested from the provider only here and immediately
+        passed to python-fints. We don't retain it in our scope.
+        """
+        pin = self._pin_provider()
+        try:
+            return _ExtendedFinTSClient(
+                bank_identifier=self._blz,
+                user_id=self._login,
+                pin=pin,
+                server=self._url,
+                product_id=self._product_id,
+                from_data=self._fints_state,
+            )
+        finally:
+            del pin
 
     def _get_client(self) -> FinTS3PinTanClient:
         """Return the active client, creating one if necessary."""
         if self._client is None:
             self._client = self._build_client()
         return self._client
+
+    def deconstruct(self) -> bytes | None:
+        """Return a serialised FinTS state blob for persistence.
+
+        Per python-fints contract this blob contains system_id, BPD, UPD,
+        and (with including_private=True) account numbers — but NOT the PIN.
+        Restoring this state on the next connect avoids re-triggering SCA
+        for every dialog.
+        """
+        if self._client is None:
+            return None
+        try:
+            return self._client.deconstruct(including_private=True)
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug("Failed to deconstruct FinTS state", exc_info=True)
+            return None
+
+    def close(self) -> None:
+        """Drop the underlying client. Forces a fresh login (with PIN) next time."""
+        self._close_standing_dialog()
+        self._client = None
+        self._cached_accounts = None
 
     # ------------------------------------------------------------------
     # Public API

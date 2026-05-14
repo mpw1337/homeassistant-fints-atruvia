@@ -8,7 +8,7 @@
           "username": "NetKey / Benutzername",
           "password": "PIN",
           "url": "Bank",
-          "custom_url": "Manuelle FinTS-URL",
+          "custom_url": "Manuelle FinTS-URL (https://)",
           "product_id": "Produkt-ID (optional)"
         }
       },
@@ -21,15 +21,27 @@
         "data": {
           "selected_accounts": "Konten"
         }
+      },
+      "reauth_confirm": {
+        "title": "Zugangsdaten erneuern",
+        "description": "Bitte gib NetKey und PIN erneut ein, um die Verbindung zur Bank wiederherzustellen.",
+        "data": {
+          "username": "NetKey / Benutzername",
+          "password": "PIN"
+        }
       }
     },
     "error": {
       "cannot_connect": "Verbindung zur Bank fehlgeschlagen. Bitte Zugangsdaten und URL prüfen.",
       "no_accounts_found": "Keine Konten gefunden.",
+      "insecure_url": "Die FinTS-URL muss mit https:// beginnen. Plain http würde die PIN unverschlüsselt übertragen.",
+      "invalid_url": "Die FinTS-URL ist ungültig.",
+      "required": "Pflichtfeld.",
       "unknown": "Unbekannter Fehler."
     },
     "abort": {
-      "already_configured": "Diese Bank ist bereits eingerichtet."
+      "already_configured": "Diese Bank ist bereits eingerichtet.",
+      "reauth_successful": "Zugangsdaten aktualisiert."
     }
   }
 }

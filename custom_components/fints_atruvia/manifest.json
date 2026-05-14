@@ -1,10 +1,11 @@
 {
   "domain": "fints_atruvia",
   "name": "FinTS Atruvia",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "documentation": "https://github.com/yourusername/fints-atruvia",
   "requirements": [
-    "fints>=5.0.0"
+    "fints>=5.0.0",
+    "cryptography>=41.0.0"
   ],
   "dependencies": [],
   "codeowners": [],

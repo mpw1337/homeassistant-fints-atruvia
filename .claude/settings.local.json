@@ -50,7 +50,8 @@
       "Bash(ls /workspaces)",
       "Read(//var/run/**)",
       "Bash(docker exec trusting_panini python -c ' *)",
-      "Bash(docker exec *)"
+      "Bash(docker exec *)",
+      "Bash(ruff check *)"
     ]
   }
 }
