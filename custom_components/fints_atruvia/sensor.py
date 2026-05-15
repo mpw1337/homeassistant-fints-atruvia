@@ -15,6 +15,23 @@ from . import DOMAIN
 from .coordinator import FintsBankingCoordinator
 
 
+def _mask_iban(iban: str) -> str:
+    """Return an IBAN with the middle digits masked.
+
+    Example: ``DE51550905000000233922`` -> ``DE51 **** **** **** 3922``.
+    Sensor attributes are recorded in the HA SQLite history and visible to
+    anyone with state read access. Masking by default keeps the full
+    account number out of long-term storage and the event bus.
+    """
+    if not iban or len(iban) < 8:
+        return iban
+    clean = iban.replace(" ", "")
+    head = clean[:4]
+    tail = clean[-4:]
+    middle = "**** " * ((len(clean) - 8 + 3) // 4)
+    return f"{head} {middle.strip()} {tail}".strip()
+
+
 def _to_float(value: Any) -> float | None:
     """Convert Decimal/int/float to float, or return None."""
     if value is None:
@@ -85,7 +102,7 @@ class FintsBankingSensor(CoordinatorEntity[FintsBankingCoordinator], SensorEntit
         account_data = self.coordinator.data.get(self._iban, {})
         transactions = account_data.get("transactions", [])
         return {
-            "iban": self._iban,
+            "iban": _mask_iban(self._iban),
             "available_balance": _to_float(account_data.get("available_balance")),
             "balance_pending": _to_float(account_data.get("balance_pending")),
             "pending_amount": _to_float(account_data.get("pending_amount")),
@@ -139,7 +156,7 @@ class _FintsStatsSensor(CoordinatorEntity[FintsBankingCoordinator], SensorEntity
             return {}
         stats = self.coordinator.data.get(self._iban, {}).get("stats", {})
         return {
-            "iban": self._iban,
+            "iban": _mask_iban(self._iban),
             "count_30d": stats.get("count_30d"),
         }
 

@@ -16,13 +16,35 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from . import DOMAIN, EVENT_NEW_TRANSACTION, STATS_WINDOW_DAYS
-from .api import FinTsAtruviaClient, TanRequiredError
+from . import (
+    CONF_BLZ,
+    CONF_CREDENTIAL_ID,
+    CONF_PRODUCT_ID,
+    CONF_SELECTED_ACCOUNTS,
+    CONF_URL,
+    DOMAIN,
+    EVENT_NEW_TRANSACTION,
+    STATS_WINDOW_DAYS,
+)
+from .api import FinTsAtruviaClient, InvalidUrlError, TanRequiredError
+from .storage import (
+    CredentialStoreError,
+    FintsCredentialStore,
+    FintsStateStore,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 _STORAGE_VERSION = 1
 _STORAGE_KEY_FMT = "fints_atruvia_seen_transactions_{entry_id}"
+
+
+def _mask_iban_for_event(iban: str) -> str:
+    """Return a masked IBAN suitable for event payloads."""
+    clean = iban.replace(" ", "")
+    if len(clean) < 8:
+        return clean
+    return f"{clean[:4]}{'*' * (len(clean) - 8)}{clean[-4:]}"
 
 
 def _transaction_hash(txn: dict) -> str:
@@ -74,14 +96,19 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
         )
         self.config_entry = config_entry
         data = config_entry.data
-        self._client = FinTsAtruviaClient(
-            blz=data["blz"],
-            login=data["username"],
-            pin=data["password"],
-            url=data["url"],
-            product_id=data.get("product_id") or None,
-        )
-        self._selected_accounts: list[str] = data.get("selected_accounts", [])
+        credential_id = data.get(CONF_CREDENTIAL_ID)
+        if not credential_id:
+            # Cannot recover automatically: the migration must have failed
+            # or the entry was created by an older code path. Raising here
+            # surfaces to async_setup_entry and triggers a reauth prompt.
+            raise ConfigEntryAuthFailed(
+                "Credential reference missing — please re-authenticate."
+            )
+        self._credential_id: str = credential_id
+        self._credential_store = FintsCredentialStore(hass, credential_id)
+        self._state_store = FintsStateStore(hass, credential_id)
+        self._client: FinTsAtruviaClient | None = None
+        self._selected_accounts: list[str] = data.get(CONF_SELECTED_ACCOUNTS, [])
         self._tan_response = None
         self.is_2fa_pending: bool = False
         # Persisted set of transaction hashes per IBAN, prevents event flood
@@ -94,7 +121,62 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
             hass,
             _STORAGE_VERSION,
             _STORAGE_KEY_FMT.format(entry_id=config_entry.entry_id),
+            private=True,
         )
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    async def async_init(self) -> None:
+        """Decrypt credentials and build the FinTS client.
+
+        Raises ConfigEntryAuthFailed on credential errors so HA opens a
+        reauth flow instead of looping update failures.
+        """
+        data = self.config_entry.data
+        try:
+            creds = await self._credential_store.load()
+        except CredentialStoreError as exc:
+            raise ConfigEntryAuthFailed(
+                "Credentials could not be loaded — please re-authenticate."
+            ) from exc
+
+        # PIN is held in this coordinator instance for the lifetime of the
+        # config entry. python-fints captures it internally when the dialog
+        # opens, so there is no way to drop it earlier without rebuilding
+        # the client on every poll — at the cost of repeated SCA prompts.
+        # The pin_provider indirection keeps the PIN out of FinTsAtruviaClient
+        # construction args (which show up in tracebacks) and lets us wipe
+        # ``_pin`` on unload.
+        self._pin: str | None = creds["pin"]
+
+        fints_state = await self._state_store.load()
+
+        try:
+            self._client = FinTsAtruviaClient(
+                blz=data[CONF_BLZ],
+                login=creds["username"],
+                pin_provider=lambda: self._pin or "",
+                url=data[CONF_URL],
+                product_id=data.get(CONF_PRODUCT_ID) or None,
+                fints_state=fints_state,
+            )
+        except InvalidUrlError as exc:
+            raise ConfigEntryAuthFailed(
+                f"Bank URL is invalid: {exc}"
+            ) from exc
+
+    async def async_shutdown(self) -> None:
+        """Wipe the in-memory PIN. Called from async_unload_entry."""
+        self._pin = None
+        if self._client is not None:
+            self._client.close()
+            self._client = None
+
+    # ------------------------------------------------------------------
+    # Seen-transactions persistence
+    # ------------------------------------------------------------------
 
     async def async_load_seen(self) -> None:
         """Load the persisted set of seen transaction hashes once at setup."""
@@ -143,9 +225,14 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
 
     def _build_event_payload(self, iban: str, txn: dict, txn_hash: str) -> dict:
         amount = txn.get("amount")
+        # IBAN is masked in the event payload — automations can still
+        # distinguish accounts via integration_id + iban_last4, and the
+        # full IBAN never leaves the integration in plaintext.
+        clean = iban.replace(" ", "")
         return {
             "integration_id": self.config_entry.entry_id,
-            "iban": iban,
+            "iban_masked": _mask_iban_for_event(iban),
+            "iban_last4": clean[-4:] if len(clean) >= 4 else clean,
             "date": txn.get("date"),
             "amount": float(amount) if amount is not None else None,
             "currency": txn.get("currency"),
@@ -158,6 +245,9 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
         """Fetch data for all selected accounts, compute stats, emit events."""
         result: dict = {}
         new_events: list[dict] = []
+        if self._client is None:
+            raise ConfigEntryAuthFailed("FinTS client not initialised")
+
         try:
             accounts = await self.hass.async_add_executor_job(
                 self._client.get_accounts
@@ -206,6 +296,10 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
             # Intentionally return last known complete data rather than partial result.
             # Fresh data for already-processed IBANs is discarded to avoid partial state.
             return self.data
+        except CredentialStoreError as err:
+            # Decryption failed — typically because master key file was lost.
+            # Surface via reauth so the user can re-enter the PIN.
+            raise ConfigEntryAuthFailed(str(err)) from err
         except Exception as err:
             _LOGGER.exception("FinTS update failed")
             raise UpdateFailed(f"Error communicating with bank: {err}") from err
@@ -220,15 +314,26 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
                 self.hass.bus.async_fire(EVENT_NEW_TRANSACTION, payload)
         await self._async_save_seen()
 
+        # Persist updated FinTS state (system_id, BPD/UPD) so future dialogs
+        # don't need to re-sync — important for avoiding unnecessary SCA.
+        await self._persist_fints_state()
+
         # Clear any pending 2FA state.
         self.is_2fa_pending = False
         self._tan_response = None
         pn_async_dismiss(self.hass, "fints_atruvia_reauth")
         return result
 
+    async def _persist_fints_state(self) -> None:
+        if self._client is None:
+            return
+        blob = await self.hass.async_add_executor_job(self._client.deconstruct)
+        if blob is not None:
+            await self._state_store.save(blob)
+
     async def async_complete_reauth(self, tan: str = "") -> None:
         """Complete pending re-authentication after the user confirms SecureGo+."""
-        if self._tan_response is None:
+        if self._tan_response is None or self._client is None:
             return
         await self.hass.async_add_executor_job(
             self._client.complete_tan, self._tan_response, tan
