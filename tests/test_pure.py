@@ -22,7 +22,7 @@ from custom_components.fints_atruvia.storage import redact_credentials
 
 
 def test_mask_iban_for_event_keeps_only_country_and_last4():
-    masked = _mask_iban_for_event("DE51550905000000233922")
+    masked = _mask_iban_for_event("GB33BUKB20201555555555")
     assert masked.startswith("DE51")
     assert masked.endswith("3922")
     assert "5509" not in masked
@@ -35,12 +35,12 @@ def test_mask_iban_for_event_short_iban_passes_through():
 
 
 def test_sensor_mask_iban_replaces_middle_with_stars():
-    masked = _mask_iban("DE51550905000000233922")
+    masked = _mask_iban("GB33BUKB20201555555555")
     assert masked.startswith("DE51")
     assert masked.endswith("3922")
     assert "5509" not in masked
     # The full account number must never appear.
-    assert "550905000000233922" not in masked
+    assert "20201555555555" not in masked
 
 
 # ---------------------------------------------------------------------------
@@ -49,7 +49,7 @@ def test_sensor_mask_iban_replaces_middle_with_stars():
 
 
 def test_iban_unique_id_does_not_leak_iban():
-    iban = "DE51550905000000233922"
+    iban = "GB33BUKB20201555555555"
     uid = iban_unique_id("abc123", iban)
     assert iban not in uid
     assert len(uid) == 16
@@ -57,18 +57,18 @@ def test_iban_unique_id_does_not_leak_iban():
 
 
 def test_iban_unique_id_is_stable():
-    a = iban_unique_id("entry1", "DE51550905000000233922")
-    b = iban_unique_id("entry1", "DE51550905000000233922")
+    a = iban_unique_id("entry1", "GB33BUKB20201555555555")
+    b = iban_unique_id("entry1", "GB33BUKB20201555555555")
     assert a == b
 
 
 def test_iban_unique_id_differs_across_entries():
-    iban = "DE51550905000000233922"
+    iban = "GB33BUKB20201555555555"
     assert iban_unique_id("entry1", iban) != iban_unique_id("entry2", iban)
 
 
 def test_iban_unique_id_differs_across_ibans():
-    a = iban_unique_id("entry1", "DE51550905000000233922")
+    a = iban_unique_id("entry1", "GB33BUKB20201555555555")
     b = iban_unique_id("entry1", "DE51550905000000233923")
     assert a != b
 

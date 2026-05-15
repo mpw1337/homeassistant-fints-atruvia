@@ -56,7 +56,15 @@
       "Bash(node -c src/fints-card.js)",
       "Bash(~/.pyenv/versions/3.11.11/bin/python -m pytest --version)",
       "Bash(~/.pyenv/versions/3.11.11/bin/python *)",
-      "Bash(node -c frontend/src/fints-card.js)"
+      "Bash(node -c frontend/src/fints-card.js)",
+      "Bash(pytest tests/test_event_payload.py -v)",
+      "Bash(ruff format *)",
+      "Bash(uv run *)",
+      "Bash(uvx ruff *)",
+      "Bash(uv venv *)",
+      "Bash(uv pip *)",
+      "Bash(PYTHONPATH=__TRACKED_VAR__ .venv/bin/pytest tests/test_event_payload.py -v)",
+      "Bash(PYTHONPATH=__TRACKED_VAR__ .venv/bin/pytest)"
     ]
   }
 }
