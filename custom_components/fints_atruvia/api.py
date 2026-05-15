@@ -407,9 +407,9 @@ class FinTsAtruviaClient:
             # Both mt940.models.Transaction and fints.models.Transaction
             # expose their data via a .data dict.
             if not hasattr(txn, "data"):
-                _LOGGER.warning(
-                    "Skipping malformed transaction with no .data attribute: %r", txn
-                )
+                # Avoid %r on the transaction object — its repr may include
+                # purpose / counterparty text that we don't want in logs.
+                _LOGGER.warning("Skipping malformed transaction (no .data attribute)")
                 continue
 
             data: dict = txn.data

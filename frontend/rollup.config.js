@@ -5,6 +5,6 @@ export default defineConfig({
   output: {
     file: "../config/www/fints-atruvia-card.js",
     format: "es",
-    sourcemap: true,
+    sourcemap: false,
   },
 });

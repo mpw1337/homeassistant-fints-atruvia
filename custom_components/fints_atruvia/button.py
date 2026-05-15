@@ -1,14 +1,19 @@
 """Button platform for fints_atruvia."""
 from __future__ import annotations
 
+import logging
+
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .coordinator import FintsBankingCoordinator
 from . import DOMAIN
+
+_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
@@ -43,5 +48,7 @@ class FintsReAuthButton(CoordinatorEntity[FintsBankingCoordinator], ButtonEntity
         try:
             await self.coordinator.async_complete_reauth()
         except Exception as err:
-            from homeassistant.exceptions import HomeAssistantError
-            raise HomeAssistantError(f"Re-authentication failed: {err}") from err
+            _LOGGER.debug("Re-auth completion failed", exc_info=True)
+            raise HomeAssistantError(
+                f"Re-authentication failed ({type(err).__name__})"
+            ) from err

@@ -19,6 +19,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from . import (
     CONF_BLZ,
     CONF_CREDENTIAL_ID,
+    CONF_EXPOSE_FULL_DATA,
     CONF_PRODUCT_ID,
     CONF_SELECTED_ACCOUNTS,
     CONF_URL,
@@ -223,23 +224,34 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
         self._seen_hashes[iban] = set(current_by_hash.keys())
         return events
 
+    @property
+    def expose_full_data(self) -> bool:
+        """Whether bank-controlled transaction texts (purpose, counterparty) are exposed.
+
+        Default off — automations only see masked IBAN + amount + date + hash.
+        Toggled via the per-entry Options-Flow.
+        """
+        return bool(self.config_entry.options.get(CONF_EXPOSE_FULL_DATA, False))
+
     def _build_event_payload(self, iban: str, txn: dict, txn_hash: str) -> dict:
         amount = txn.get("amount")
         # IBAN is masked in the event payload — automations can still
         # distinguish accounts via integration_id + iban_last4, and the
         # full IBAN never leaves the integration in plaintext.
         clean = iban.replace(" ", "")
-        return {
+        payload: dict = {
             "integration_id": self.config_entry.entry_id,
             "iban_masked": _mask_iban_for_event(iban),
             "iban_last4": clean[-4:] if len(clean) >= 4 else clean,
             "date": txn.get("date"),
             "amount": float(amount) if amount is not None else None,
             "currency": txn.get("currency"),
-            "purpose": txn.get("purpose"),
-            "applicant_name": txn.get("creditor"),
             "transaction_hash": txn_hash,
         }
+        if self.expose_full_data:
+            payload["purpose"] = txn.get("purpose")
+            payload["applicant_name"] = txn.get("creditor")
+        return payload
 
     async def _async_update_data(self) -> dict:
         """Fetch data for all selected accounts, compute stats, emit events."""
@@ -301,8 +313,11 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
             # Surface via reauth so the user can re-enter the PIN.
             raise ConfigEntryAuthFailed(str(err)) from err
         except Exception as err:
-            _LOGGER.exception("FinTS update failed")
-            raise UpdateFailed(f"Error communicating with bank: {err}") from err
+            # Bank responses may carry sensitive content in their string
+            # form. Log only the exception type; the original exception is
+            # still chained via ``raise from`` for debug-level traceback.
+            _LOGGER.error("FinTS update failed: %s", type(err).__name__)
+            raise UpdateFailed("Error communicating with bank") from err
 
         # Update succeeded for all accounts: mark seen-set as initialised, fire
         # events, and persist. Persistence happens after firing so the receiving

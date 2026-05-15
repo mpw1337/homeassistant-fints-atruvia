@@ -41,7 +41,19 @@
     },
     "abort": {
       "already_configured": "Diese Bank ist bereits eingerichtet.",
-      "reauth_successful": "Zugangsdaten aktualisiert."
+      "reauth_successful": "Zugangsdaten aktualisiert.",
+      "reauth_no_entry": "Konfigurationseintrag für Re-Auth nicht gefunden."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Datenfreigabe konfigurieren",
+        "description": "Standardmäßig werden Verwendungszweck und Empfängername nicht im Event-Bus oder in den Sensor-Attributen exponiert. Aktivieren, falls Automationen oder die Karte diese Daten benötigen — beachte, dass die Daten dann in der HA-Historie landen und für alle Nutzer mit Lesezugriff sichtbar sind.",
+        "data": {
+          "expose_full_data": "Verwendungszweck und Empfängername exponieren"
+        }
+      }
     }
   }
 }
