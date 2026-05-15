@@ -1,12 +1,14 @@
 """The fints_atruvia integration."""
 from __future__ import annotations
 
+import hashlib
 import logging
 import uuid
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 
 from .storage import FintsCredentialStore, FintsStateStore
 
@@ -27,15 +29,74 @@ CONF_URL = "url"
 CONF_PRODUCT_ID = "product_id"
 CONF_SELECTED_ACCOUNTS = "selected_accounts"
 CONF_CREDENTIAL_ID = "credential_id"
-CONF_EXPOSE_FULL_IBAN = "expose_full_iban"
+
+# Options-flow toggle (default off). When off, the integration keeps bank
+# transaction texts (purpose, counterparty name) out of:
+#   - the new-transaction event payload
+#   - sensor extra_state_attributes (and therefore the recorder + state API)
+# Users who script automations against transaction texts can opt in per entry.
+CONF_EXPOSE_FULL_DATA = "expose_full_data"
 
 _LOGGER = logging.getLogger(__name__)
+
+# Stats-sensor suffixes that follow the IBAN portion of a unique_id.
+# Order matters: longest match first so ``_income_30d`` doesn't get partially
+# matched by a shorter suffix.
+_SENSOR_SUFFIXES = ("_income_30d", "_expense_30d")
+
+
+def iban_unique_id(entry_id: str, iban: str) -> str:
+    """Return a stable, IBAN-free identifier for sensor unique_ids.
+
+    Banking IBANs landed in ``.storage/core.entity_registry`` under the old
+    naming scheme. We hash them with the entry_id as salt so the registry —
+    which the HA REST API exposes — no longer contains plaintext account
+    numbers. 16 hex chars (~64 bits) is plenty for collision resistance
+    inside a single entry.
+    """
+    return hashlib.sha256(f"{entry_id}|{iban}".encode("utf-8")).hexdigest()[:16]
+
+
+async def _async_migrate_unique_ids(
+    hass: HomeAssistant, entry: ConfigEntry
+) -> None:
+    """Migrate legacy ``{entry_id}_{iban}[_suffix]`` unique_ids to a hashed form."""
+    entry_id = entry.entry_id
+    prefix = f"{entry_id}_"
+
+    @callback
+    def _migrate(reg_entry: er.RegistryEntry) -> dict | None:
+        uid = reg_entry.unique_id
+        if not uid.startswith(prefix):
+            return None
+        remainder = uid[len(prefix):]
+        suffix = ""
+        for known in _SENSOR_SUFFIXES:
+            if remainder.endswith(known):
+                suffix = known
+                remainder = remainder[: -len(known)]
+                break
+        # The reauth button uses ``{entry_id}_reauth_button`` and has no IBAN.
+        if remainder == "reauth_button":
+            return None
+        # Already migrated (16 lowercase hex chars).
+        if len(remainder) == 16 and all(c in "0123456789abcdef" for c in remainder):
+            return None
+        # Anything else with a country-code-like prefix is treated as a legacy
+        # IBAN and rewritten.
+        if len(remainder) < 4 or not remainder[:2].isalpha():
+            return None
+        new_uid = f"{entry_id}_{iban_unique_id(entry_id, remainder)}{suffix}"
+        return {"new_unique_id": new_uid}
+
+    await er.async_migrate_entries(hass, entry_id, _migrate)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up fints_atruvia from a config entry."""
     from .coordinator import FintsBankingCoordinator
 
+    await _async_migrate_unique_ids(hass, entry)
     coordinator = FintsBankingCoordinator(hass, entry)
     await coordinator.async_init()
     await coordinator.async_load_seen()
@@ -70,6 +131,10 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     v1 (legacy): username and password lived in ``entry.data`` as cleartext.
     v2:          credentials moved to an encrypted store, ``entry.data``
                  keeps only a ``credential_id`` reference.
+
+    Idempotent: if a credential_id already exists (partial v1→v2 retry), we
+    reuse it instead of orphaning the previously encrypted blob. We also
+    verify after the update that no plaintext password leaked through.
     """
     if entry.version == 1:
         legacy = entry.data
@@ -82,7 +147,10 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
             return False
 
-        credential_id = uuid.uuid4().hex
+        # If a previous migration attempt got as far as writing credentials
+        # but not as far as updating the entry, reuse the existing id so the
+        # old encrypted blob isn't orphaned.
+        credential_id = legacy.get(CONF_CREDENTIAL_ID) or uuid.uuid4().hex
         await FintsCredentialStore(hass, credential_id).save(username, password)
 
         new_data = {
@@ -92,14 +160,23 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             CONF_SELECTED_ACCOUNTS: legacy.get("selected_accounts", []),
             CONF_CREDENTIAL_ID: credential_id,
         }
-        # async_update_entry serialises via JSON; nothing sensitive left here.
         hass.config_entries.async_update_entry(
             entry,
             data=new_data,
             version=2,
         )
+        # Defensive post-check: HA serialises the entry on update, so by the
+        # time we return here the password field must be gone from entry.data.
+        if "password" in entry.data or "username" in entry.data:
+            _LOGGER.error(
+                "Migration of entry %s did not clear plaintext credentials",
+                entry.entry_id,
+            )
+            return False
         _LOGGER.info(
-            "Migrated fints_atruvia entry %s to encrypted credential storage",
+            "Migrated fints_atruvia entry %s to encrypted credential storage. "
+            "Existing HA backups may still contain the plaintext PIN — "
+            "delete or re-encrypt them.",
             entry.entry_id,
         )
     return True

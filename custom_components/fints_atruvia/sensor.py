@@ -11,7 +11,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from . import DOMAIN
+from . import DOMAIN, iban_unique_id
 from .coordinator import FintsBankingCoordinator
 
 
@@ -75,7 +75,8 @@ class FintsBankingSensor(CoordinatorEntity[FintsBankingCoordinator], SensorEntit
         """Initialise the sensor for the given IBAN."""
         super().__init__(coordinator)
         self._iban = iban
-        self._attr_unique_id = f"{coordinator.config_entry.entry_id}_{iban}"
+        entry_id = coordinator.config_entry.entry_id
+        self._attr_unique_id = f"{entry_id}_{iban_unique_id(entry_id, iban)}"
         self._attr_name = f"Konto {iban[-4:]}"
         self._attr_icon = "mdi:bank"
         self._attr_device_class = SensorDeviceClass.MONETARY
@@ -96,23 +97,31 @@ class FintsBankingSensor(CoordinatorEntity[FintsBankingCoordinator], SensorEntit
 
     @property
     def extra_state_attributes(self) -> dict:
-        """Return additional state attributes."""
+        """Return additional state attributes.
+
+        ``transactions`` is opt-in via the Options-Flow. By default it is
+        omitted so bank-controlled purpose/counterparty text never enters
+        the recorder or the state API. The Lovelace card detects the
+        missing attribute and falls back to a balance-only view.
+        """
         if not self.coordinator.data:
             return {}
         account_data = self.coordinator.data.get(self._iban, {})
-        transactions = account_data.get("transactions", [])
-        return {
+        attrs: dict = {
             "iban": _mask_iban(self._iban),
             "available_balance": _to_float(account_data.get("available_balance")),
             "balance_pending": _to_float(account_data.get("balance_pending")),
             "pending_amount": _to_float(account_data.get("pending_amount")),
             "booking_date": _date_iso(account_data.get("booking_date")),
-            "transactions": [
-                {**txn, "amount": float(txn["amount"])} if txn.get("amount") is not None else txn
-                for txn in transactions[-10:]
-            ],
             "2fa_pending": self.coordinator.is_2fa_pending,
         }
+        if self.coordinator.expose_full_data:
+            transactions = account_data.get("transactions", [])
+            attrs["transactions"] = [
+                {**txn, "amount": float(txn["amount"])} if txn.get("amount") is not None else txn
+                for txn in transactions[-10:]
+            ]
+        return attrs
 
 
 class _FintsStatsSensor(CoordinatorEntity[FintsBankingCoordinator], SensorEntity):
@@ -131,8 +140,9 @@ class _FintsStatsSensor(CoordinatorEntity[FintsBankingCoordinator], SensorEntity
     def __init__(self, coordinator: FintsBankingCoordinator, iban: str) -> None:
         super().__init__(coordinator)
         self._iban = iban
+        entry_id = coordinator.config_entry.entry_id
         self._attr_unique_id = (
-            f"{coordinator.config_entry.entry_id}_{iban}_{self._stats_key}"
+            f"{entry_id}_{iban_unique_id(entry_id, iban)}_{self._stats_key}"
         )
         self._attr_name = f"Konto {iban[-4:]} {self._name_suffix}"
         self._attr_icon = self._icon

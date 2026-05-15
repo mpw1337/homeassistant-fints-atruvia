@@ -9,12 +9,19 @@ from urllib.parse import urlparse
 import voluptuous as vol
 from fints.client import NeedTANResponse
 
-from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
+from homeassistant.core import callback
 from homeassistant.helpers import selector
 
 from . import (
     CONF_BLZ,
     CONF_CREDENTIAL_ID,
+    CONF_EXPOSE_FULL_DATA,
     CONF_PRODUCT_ID,
     CONF_SELECTED_ACCOUNTS,
     CONF_URL,
@@ -61,7 +68,14 @@ STEP_USER_SCHEMA = vol.Schema(
 
 
 def _validate_https_url(url: str) -> str | None:
-    """Return an error code if *url* is not a valid https URL."""
+    """Return an error code if *url* is not a valid https URL.
+
+    Rejects:
+    * non-https schemes (downgrade attack)
+    * empty netloc
+    * netlocs that cannot be encoded as plain ASCII via IDNA — protects
+      against homoglyph / Punycode lookalike domains like ``атруvia.de``.
+    """
     try:
         parsed = urlparse(url)
     except ValueError:
@@ -69,6 +83,19 @@ def _validate_https_url(url: str) -> str | None:
     if parsed.scheme.lower() != "https":
         return "insecure_url"
     if not parsed.netloc:
+        return "invalid_url"
+    # Strip optional userinfo and port before the IDNA check.
+    host = parsed.hostname or ""
+    if not host:
+        return "invalid_url"
+    try:
+        host.encode("ascii")
+    except UnicodeEncodeError:
+        try:
+            host.encode("idna")
+        except UnicodeError:
+            return "invalid_url"
+        # Non-ASCII hostname: refuse outright to avoid homoglyph attacks.
         return "invalid_url"
     return None
 
@@ -165,8 +192,11 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
             result = await self.hass.async_add_executor_job(
                 self._client.init_system_id
             )
-        except Exception:  # noqa: BLE001
-            _LOGGER.exception("Error during FinTS system-ID init")
+        except Exception as exc:  # noqa: BLE001
+            # Log only the exception type. python-fints errors may quote
+            # bank-response content (HBCI segments can include account
+            # numbers) — keep that out of HA logs.
+            _LOGGER.error("FinTS system-ID init failed: %s", type(exc).__name__)
             return self.async_show_form(
                 step_id="user",
                 data_schema=STEP_USER_SCHEMA,
@@ -202,8 +232,8 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
                     self._tan_response,
                     "",
                 )
-            except Exception:  # noqa: BLE001
-                _LOGGER.exception("Error completing TAN challenge")
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.error("TAN challenge failed: %s", type(exc).__name__)
                 return self.async_show_form(
                     step_id="2fa",
                     data_schema=vol.Schema({}),
@@ -239,8 +269,8 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
             accounts = await self.hass.async_add_executor_job(
                 self._client.get_accounts
             )
-        except Exception:  # noqa: BLE001
-            _LOGGER.exception("Error fetching accounts")
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.error("Account fetch failed: %s", type(exc).__name__)
             return self.async_show_form(
                 step_id="accounts",
                 data_schema=vol.Schema({}),
@@ -254,10 +284,13 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors={"base": "no_accounts_found"},
             )
 
+        # Mask the displayed IBAN — only the value (kept server-side via
+        # selected_accounts) needs the full IBAN. The label travels through
+        # the WebSocket form to the browser and can be sniffed via DevTools.
         account_options = [
             selector.SelectOptionDict(
                 value=account.iban,
-                label=f"{account.iban} ({account.accountnumber})",
+                label=f"Konto …{account.iban[-4:]} ({account.accountnumber})",
             )
             for account in accounts
         ]
@@ -298,8 +331,12 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
         if self._reauth_entry is not None:
-            # Reauth: update credentials in place, reuse existing credential_id.
-            credential_id = self._reauth_entry.data.get(CONF_CREDENTIAL_ID) or uuid.uuid4().hex
+            # Reauth: update credentials in place, reuse existing credential_id
+            # so the encrypted blob is overwritten rather than orphaned. A
+            # fresh uuid is generated only when migrating from a broken state.
+            credential_id = (
+                self._reauth_entry.data.get(CONF_CREDENTIAL_ID) or uuid.uuid4().hex
+            )
             await FintsCredentialStore(self.hass, credential_id).save(
                 creds["username"], creds["password"]
             )
@@ -313,6 +350,7 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
                     CONF_CREDENTIAL_ID: credential_id,
                 },
             )
+            self._credentials = {}
             await self.hass.config_entries.async_reload(self._reauth_entry.entry_id)
             return self.async_abort(reason="reauth_successful")
 
@@ -323,7 +361,7 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
         await FintsCredentialStore(self.hass, credential_id).save(
             creds["username"], creds["password"]
         )
-        return self.async_create_entry(
+        result = self.async_create_entry(
             title=title,
             data={
                 CONF_BLZ: creds["blz"],
@@ -333,6 +371,10 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_CREDENTIAL_ID: credential_id,
             },
         )
+        # Drop the plaintext PIN from the flow object now that the encrypted
+        # store owns it.
+        self._credentials = {}
+        return result
 
     # ------------------------------------------------------------------
     # Reauth flow
@@ -353,7 +395,8 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
         """Collect a fresh PIN / username for an existing entry."""
         errors: dict[str, str] = {}
         entry = self._reauth_entry
-        assert entry is not None
+        if entry is None:
+            return self.async_abort(reason="reauth_no_entry")
 
         schema = vol.Schema(
             {
@@ -403,3 +446,34 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
         except CredentialStoreError:
             return ""
         return creds.get("username", "")
+
+    # ------------------------------------------------------------------
+    # Options flow
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
+        """Return the options flow handler for this entry."""
+        return FintsAtruviaOptionsFlow(config_entry)
+
+
+class FintsAtruviaOptionsFlow(OptionsFlow):
+    """Per-entry options. Currently exposes the data-disclosure toggle."""
+
+    def __init__(self, config_entry: ConfigEntry) -> None:
+        self._entry = config_entry
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        current = self._entry.options.get(CONF_EXPOSE_FULL_DATA, False)
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_EXPOSE_FULL_DATA, default=current): selector.BooleanSelector(),
+            }
+        )
+        return self.async_show_form(step_id="init", data_schema=schema)

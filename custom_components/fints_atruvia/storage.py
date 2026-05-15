@@ -33,7 +33,7 @@ _MASTER_KEY_STORAGE = "fints_atruvia_master_key"
 _CRED_VERSION = 1
 _CRED_STORAGE_FMT = "fints_atruvia_credentials_{credential_id}"
 
-_FINTS_STATE_VERSION = 1
+_FINTS_STATE_VERSION = 2
 _FINTS_STATE_STORAGE_FMT = "fints_atruvia_state_{credential_id}"
 
 
@@ -46,6 +46,9 @@ def _master_store(hass: HomeAssistant) -> Store:
 
 
 async def _get_or_create_master_key(hass: HomeAssistant) -> bytes:
+    # HA's Store serialises async_load/async_save through an internal lock,
+    # so concurrent first-time setups of two entries cannot generate two
+    # different master keys here.
     store = _master_store(hass)
     data = await store.async_load()
     if isinstance(data, dict) and isinstance(data.get("key"), str):
@@ -111,11 +114,17 @@ class FintsStateStore:
     """Persists the python-fints deconstruct() blob (system_id, BPD, UPD).
 
     The blob does NOT contain a PIN per the python-fints contract, but it
-    does contain account numbers and bank parameters. Stored with mode 0600
-    via ``Store(private=True)``.
+    does contain account numbers, BLZ, BPD and UPD — bank-internal data that
+    SECURITY.md classifies as sensitive. Stored Fernet-encrypted with the
+    same master key as credentials, file mode 0600 via ``Store(private=True)``.
+
+    v1 (legacy): ``{"blob": "<hex>"}`` plaintext. Read once at load time and
+    transparently re-encrypted on the next save.
+    v2:          ``{"ciphertext": "<fernet>"}`` encrypted.
     """
 
     def __init__(self, hass: HomeAssistant, credential_id: str) -> None:
+        self._hass = hass
         self._store = Store(
             hass,
             _FINTS_STATE_VERSION,
@@ -125,18 +134,35 @@ class FintsStateStore:
 
     async def load(self) -> bytes | None:
         data = await self._store.async_load()
-        if not isinstance(data, dict) or "blob" not in data:
+        if not isinstance(data, dict):
             return None
-        try:
-            return bytes.fromhex(data["blob"])
-        except (TypeError, ValueError):
-            return None
+
+        if "ciphertext" in data:
+            key = await _get_or_create_master_key(self._hass)
+            try:
+                return Fernet(key).decrypt(data["ciphertext"].encode("ascii"))
+            except (InvalidToken, ValueError):
+                # Corrupted blob or master-key rotation. Drop it so the next
+                # bank dialog rebuilds the state from scratch — that triggers
+                # a fresh SCA but is safer than feeding garbage to python-fints.
+                _LOGGER.warning("FinTS state blob could not be decrypted, discarding")
+                return None
+
+        if "blob" in data:
+            # v1 plaintext. Decode and let the caller's next save() re-encrypt.
+            try:
+                return bytes.fromhex(data["blob"])
+            except (TypeError, ValueError):
+                return None
+        return None
 
     async def save(self, blob: bytes | None) -> None:
         if blob is None:
             await self._store.async_remove()
             return
-        await self._store.async_save({"blob": blob.hex()})
+        key = await _get_or_create_master_key(self._hass)
+        ciphertext = Fernet(key).encrypt(blob).decode("ascii")
+        await self._store.async_save({"ciphertext": ciphertext})
 
     async def remove(self) -> None:
         await self._store.async_remove()

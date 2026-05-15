@@ -1,3 +1,6 @@
+// All values reaching the HTML template MUST be wrapped in escapeHtml().
+// Bank-controlled fields (purpose, applicant_name, IBAN) and HA-controlled
+// fields (state, attribute values) are treated as untrusted by default.
 function escapeHtml(str) {
   const div = document.createElement("div");
   div.textContent = String(str ?? "");
@@ -49,13 +52,15 @@ class FintsAtruviaCard extends HTMLElement {
   _formatDate(dateStr) {
     if (!dateStr) return "";
     try {
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return "";
       return new Intl.DateTimeFormat("de-DE", {
         day: "2-digit",
         month: "2-digit",
         year: "numeric",
-      }).format(new Date(dateStr));
+      }).format(d);
     } catch {
-      return dateStr;
+      return "";
     }
   }
 
@@ -68,6 +73,8 @@ class FintsAtruviaCard extends HTMLElement {
     return `${country}** ${masked.slice(4)} ${last4}`;
   }
 
+  // Returns raw (unescaped) text — callers MUST pass result through escapeHtml
+  // before HTML insertion. See _renderEntity for the only current call site.
   _truncate(str, maxLen) {
     if (!str) return "";
     return str.length > maxLen ? str.slice(0, maxLen) + "…" : str;
@@ -91,7 +98,11 @@ class FintsAtruviaCard extends HTMLElement {
     const balance = parseFloat(stateObj.state);
     const isNegative = !isNaN(balance) && balance < 0;
     const balanceClass = isNegative ? "balance negative" : "balance positive";
-    const balanceFormatted = isNaN(balance) ? stateObj.state : this._formatCurrency(balance, currency);
+    // _formatCurrency output is numeric/punctuation only and safe to interpolate
+    // raw. The NaN fallback is the untrusted HA state string — escape it.
+    const balanceFormatted = isNaN(balance)
+      ? escapeHtml(stateObj.state)
+      : this._formatCurrency(balance, currency);
 
     const iban = attr.iban || "";
     const maskedIban = iban ? this._maskIban(iban) : "";
@@ -129,20 +140,29 @@ class FintsAtruviaCard extends HTMLElement {
       ? `<div class="balance-details">${detailRows.join("")}</div>`
       : "";
 
-    const transactions = Array.isArray(attr.transactions) ? attr.transactions : [];
+    // ``transactions`` is opt-in (see CONF_EXPOSE_FULL_DATA). When the
+    // attribute is missing entirely the user has not opted in — show a
+    // short hint instead of an empty list. ``[]`` means opted in but no
+    // recent activity.
+    const transactionsAvailable = Array.isArray(attr.transactions);
+    const transactions = transactionsAvailable ? attr.transactions : [];
     const lastFive = transactions.slice(0, 5);
 
     const transactionRows = lastFive
       .map((tx, i) => {
         const txAmount = parseFloat(tx.amount);
         const txClass = !isNaN(txAmount) && txAmount < 0 ? "amount negative" : "amount positive";
-        const txFormatted = isNaN(txAmount) ? tx.amount : this._formatCurrency(txAmount, currency);
+        // _formatCurrency output is safe; the NaN fallback is bank-controlled
+        // and must be escaped before insertion.
+        const txFormatted = isNaN(txAmount)
+          ? escapeHtml(tx.amount)
+          : this._formatCurrency(txAmount, currency);
         const txDate = this._formatDate(tx.date || tx.booking_date || tx.booking_datetime);
         const purpose = this._truncate(tx.purpose || tx.reference || tx.creditor_name || "–", 40);
         const rowClass = i % 2 === 0 ? "transaction even" : "transaction odd";
         return `
           <div class="${rowClass}">
-            <span class="date">${txDate}</span>
+            <span class="date">${escapeHtml(txDate)}</span>
             <span class="${txClass}">${txFormatted}</span>
             <span class="purpose">${escapeHtml(purpose)}</span>
           </div>`;
@@ -153,13 +173,17 @@ class FintsAtruviaCard extends HTMLElement {
       ? `<div class="warning-banner">⚠ Re-Authentifizierung erforderlich</div>`
       : "";
 
-    const transactionsSection =
-      lastFive.length > 0
-        ? `<details>
+    let transactionsSection;
+    if (!transactionsAvailable) {
+      transactionsSection = `<p class="no-transactions">Transaktionsdetails deaktiviert (in Integrations-Optionen aktivierbar)</p>`;
+    } else if (lastFive.length > 0) {
+      transactionsSection = `<details>
             <summary>Letzte Transaktionen (${lastFive.length})</summary>
             <div class="transactions">${transactionRows}</div>
-          </details>`
-        : `<p class="no-transactions">Keine Transaktionen verfügbar</p>`;
+          </details>`;
+    } else {
+      transactionsSection = `<p class="no-transactions">Keine Transaktionen verfügbar</p>`;
+    }
 
     return `
       <ha-card header="Konto ${escapeHtml(last4)}">
