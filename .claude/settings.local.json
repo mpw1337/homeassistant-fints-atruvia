@@ -64,7 +64,8 @@
       "Bash(uv venv *)",
       "Bash(uv pip *)",
       "Bash(PYTHONPATH=__TRACKED_VAR__ .venv/bin/pytest tests/test_event_payload.py -v)",
-      "Bash(PYTHONPATH=__TRACKED_VAR__ .venv/bin/pytest)"
+      "Bash(PYTHONPATH=__TRACKED_VAR__ .venv/bin/pytest)",
+      "mcp__ha-mcp__ha_config_get_dashboard"
     ]
   }
 }

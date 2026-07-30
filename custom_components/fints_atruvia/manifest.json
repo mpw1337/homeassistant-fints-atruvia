@@ -1,15 +1,12 @@
 {
   "domain": "fints_atruvia",
   "name": "FinTS Atruvia",
-  "version": "0.3.0",
-  "documentation": "https://github.com/yourusername/fints-atruvia",
-  "requirements": [
-    "fints>=5.0.0",
-    "cryptography>=43.0.0"
-  ],
-  "dependencies": [],
-  "codeowners": [],
-  "iot_class": "cloud_polling",
+  "codeowners": ["@mpw1337"],
   "config_flow": true,
-  "homeassistant": "2026.3.2"
+  "dependencies": ["http", "lovelace"],
+  "documentation": "https://github.com/mpw1337/homeassistant-fints-atruvia",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/mpw1337/homeassistant-fints-atruvia/issues",
+  "requirements": ["fints>=5.0.0", "cryptography>=43.0.0"],
+  "version": "0.4.0"
 }

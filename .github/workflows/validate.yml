@@ -1,0 +1,41 @@
+name: Validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Catches breakage from new Home Assistant / HACS releases.
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+
+jobs:
+  hassfest:
+    name: hassfest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: home-assistant/actions/hassfest@master
+
+  hacs:
+    name: HACS
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hacs/action@main
+        with:
+          category: integration
+
+  # No ruff job yet: `ruff check .` currently reports ~427 pre-existing findings
+  # (select = ALL). Add it once that backlog is worked off, otherwise every run
+  # is red and nobody looks at it.
+
+  tests:
+    name: pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv venv --python 3.14
+      - run: uv pip install -r requirements.txt
+      - run: PYTHONPATH=$PWD .venv/bin/pytest
