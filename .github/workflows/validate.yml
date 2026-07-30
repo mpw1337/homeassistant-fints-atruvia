@@ -25,6 +25,9 @@ jobs:
       - uses: hacs/action@main
         with:
           category: integration
+          # fints_atruvia is not registered in home-assistant/brands, so the
+          # brands check can never pass here. Drop this once a brands PR lands.
+          ignore: brands
 
   # No ruff job yet: `ruff check .` currently reports ~427 pre-existing findings
   # (select = ALL). Add it once that backlog is worked off, otherwise every run
