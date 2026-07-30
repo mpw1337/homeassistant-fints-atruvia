@@ -95,7 +95,9 @@ async def _async_migrate_unique_ids(
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up fints_atruvia from a config entry."""
     from .coordinator import FintsBankingCoordinator
+    from .frontend import async_register_card
 
+    await async_register_card(hass)
     await _async_migrate_unique_ids(hass, entry)
     coordinator = FintsBankingCoordinator(hass, entry)
     await coordinator.async_init()

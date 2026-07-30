@@ -11,9 +11,9 @@ Verbindet Home Assistant mit deutschen Spardabanken (Atruvia-Backend) via FinTS/
 ## Installation via HACS
 
 1. HACS in Home Assistant installieren (falls noch nicht vorhanden): [hacs.xyz](https://hacs.xyz)
-2. HACS → **Integrationen** → Drei-Punkte-Menü → **Benutzerdefinierte Repositories**
-3. URL dieses Repositories eingeben, Kategorie: **Integration**
-4. Integration **FinTS Atruvia** in HACS suchen und installieren
+2. HACS → Drei-Punkte-Menü → **Benutzerdefinierte Repositories**
+3. URL `https://github.com/mpw1337/homeassistant-fints-atruvia` eingeben, Kategorie: **Integration**
+4. Integration **FinTS Atruvia** in HACS suchen und herunterladen
 5. Home Assistant neu starten
 
 ---
@@ -43,19 +43,23 @@ Home Assistant neu starten.
 
 ## Lovelace-Karte einrichten
 
-Die Karte muss nach der Integration-Installation als Lovelace-Ressource registriert werden:
-
-1. **Einstellungen** → **Dashboards** → Drei-Punkte-Menü → **Ressourcen**
-2. Ressource hinzufügen:
-   - URL: `/local/fints-atruvia-card.js`
-   - Typ: **JavaScript-Modul**
-3. Die Datei `config/www/fints-atruvia-card.js` in das Verzeichnis `/config/www/` der HA-Instanz kopieren
+Die Karte wird von der Integration mitgeliefert und beim Einrichten automatisch
+als Lovelace-Ressource (`/fints_atruvia/fints-atruvia-card.js`, Typ `module`)
+registriert. Kein Kopieren nach `/config/www/`, kein manueller Ressourcen-Eintrag.
 
 Karte im Dashboard hinzufügen (YAML):
 ```yaml
 type: custom:fints-atruvia-card
 entity: sensor.konto_1234
 ```
+
+**Sonderfälle:**
+- Läuft Lovelace im **YAML-Ressourcen-Modus**, kann die Integration nichts
+  eintragen. Sie schreibt dann eine Warnung ins Log mit der URL, die unter
+  `lovelace: → resources:` in die `configuration.yaml` gehört.
+- Wer die Karte früher manuell unter `/local/fints-atruvia-card.js` eingetragen
+  hat, sollte diese Ressource entfernen — sonst lädt der Browser eine zweite,
+  veraltete Kopie. Die Integration weist im Log darauf hin.
 
 ---
 
@@ -69,8 +73,10 @@ Pro konfiguriertem Konto werden folgende Entities erstellt:
 | `button.re_authentifizierung_bestatigen` | Button | Wird nach ~90 Tagen aktiv |
 
 **Sensor-Attribute:**
-- `iban` — vollständige IBAN
-- `transactions` — letzte 10 Transaktionen (Datum, Betrag, Verwendungszweck)
+- `iban` — maskierte IBAN (`DE51 **** **** **** 3922`)
+- `available_balance`, `balance_pending`, `pending_amount`, `booking_date`
+- `transactions` — letzte 10 Transaktionen; nur vorhanden, wenn in den
+  Integrations-Optionen „vollständige Daten" aktiviert ist
 - `2fa_pending` — `true` wenn Re-Authentifizierung erforderlich
 
 ---
