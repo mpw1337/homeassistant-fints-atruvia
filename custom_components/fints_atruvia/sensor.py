@@ -18,7 +18,7 @@ from .coordinator import FintsBankingCoordinator
 def _mask_iban(iban: str) -> str:
     """Return an IBAN with the middle digits masked.
 
-    Example: ``GB33BUKB20201555555555`` -> ``DE51 **** **** **** 3922``.
+    Example: ``GB33BUKB20201555555555`` -> ``GB33 **** **** **** **** 5555``.
     Sensor attributes are recorded in the HA SQLite history and visible to
     anyone with state read access. Masking by default keeps the full
     account number out of long-term storage and the event bus.

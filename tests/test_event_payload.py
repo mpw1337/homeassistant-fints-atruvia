@@ -44,8 +44,8 @@ def test_event_payload_default_omits_bank_text():
     }
     payload = coord._build_event_payload("GB33BUKB20201555555555", txn, "abc")
 
-    assert payload["iban_masked"].startswith("DE51")
-    assert payload["iban_last4"] == "3922"
+    assert payload["iban_masked"].startswith("GB33")
+    assert payload["iban_last4"] == "5555"
     assert payload["amount"] == 12.34
     assert "purpose" not in payload
     assert "applicant_name" not in payload
@@ -104,7 +104,7 @@ def test_sensor_attrs_default_omits_transactions():
     assert "Geheimer Verwendungszweck" not in rendered
     assert "Sensitiver Empfaenger" not in rendered
     # IBAN must be masked in the attribute payload.
-    assert attrs["iban"].startswith("DE51")
+    assert attrs["iban"].startswith("GB33")
     assert _FULL_IBAN not in attrs["iban"]
 
 

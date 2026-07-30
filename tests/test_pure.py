@@ -23,10 +23,10 @@ from custom_components.fints_atruvia.storage import redact_credentials
 
 def test_mask_iban_for_event_keeps_only_country_and_last4():
     masked = _mask_iban_for_event("GB33BUKB20201555555555")
-    assert masked.startswith("DE51")
-    assert masked.endswith("3922")
-    assert "5509" not in masked
-    assert "0000" not in masked
+    assert masked.startswith("GB33")
+    assert masked.endswith("5555")
+    assert "BUKB" not in masked
+    assert "2020" not in masked
 
 
 def test_mask_iban_for_event_short_iban_passes_through():
@@ -36,9 +36,9 @@ def test_mask_iban_for_event_short_iban_passes_through():
 
 def test_sensor_mask_iban_replaces_middle_with_stars():
     masked = _mask_iban("GB33BUKB20201555555555")
-    assert masked.startswith("DE51")
-    assert masked.endswith("3922")
-    assert "5509" not in masked
+    assert masked.startswith("GB33")
+    assert masked.endswith("5555")
+    assert "BUKB" not in masked
     # The full account number must never appear.
     assert "20201555555555" not in masked
 
