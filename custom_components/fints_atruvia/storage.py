@@ -41,6 +41,25 @@ class CredentialStoreError(Exception):
     """Raised when credentials cannot be loaded or decrypted."""
 
 
+class _MigratingStore(Store):
+    """Store that hands legacy payloads through instead of raising.
+
+    HA's default ``_async_migrate_func`` raises NotImplementedError, which the
+    loader re-raises for a major-version bump. The v1 → v2 change here is a
+    payload-format change (plaintext hex → Fernet), and
+    :meth:`FintsStateStore.load` already dispatches on the payload keys, so the
+    migration is a pass-through: the next ``save()`` writes the v2 layout.
+    """
+
+    async def _async_migrate_func(
+        self,
+        old_major_version: int,  # noqa: ARG002 - HA dispatches on parameter count
+        old_minor_version: int,  # noqa: ARG002 - see above
+        old_data: dict,
+    ) -> dict:
+        return old_data
+
+
 def _master_store(hass: HomeAssistant) -> Store:
     return Store(hass, _MASTER_KEY_VERSION, _MASTER_KEY_STORAGE, private=True)
 
@@ -121,11 +140,18 @@ class FintsStateStore:
     v1 (legacy): ``{"blob": "<hex>"}`` plaintext. Read once at load time and
     transparently re-encrypted on the next save.
     v2:          ``{"ciphertext": "<fernet>"}`` encrypted.
+
+    Uses :class:`_MigratingStore` so HA's loader hands v1 payloads through on
+    a major-version mismatch instead of raising ``NotImplementedError``. Note
+    that HA's loader itself rewrites the file right after migrating (with
+    ``version: 2`` but the still-plaintext ``blob`` key) before ``load()``
+    ever runs — this is not a regression, the plaintext window is closed by
+    the next explicit ``save()``, which always writes ``ciphertext``.
     """
 
     def __init__(self, hass: HomeAssistant, credential_id: str) -> None:
         self._hass = hass
-        self._store = Store(
+        self._store = _MigratingStore(
             hass,
             _FINTS_STATE_VERSION,
             _FINTS_STATE_STORAGE_FMT.format(credential_id=credential_id),

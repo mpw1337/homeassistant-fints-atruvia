@@ -52,14 +52,47 @@ async def test_state_store_round_trip_encrypted(hass):
     assert payload.hex() not in raw["ciphertext"]
 
 
-async def test_state_store_reads_legacy_hex_blob(hass):
-    """v1 plaintext layout must still be readable for one cycle."""
-    store = FintsStateStore(hass, "legacy-id")
-    payload = b"legacy-state"
-    # Write a v1-shaped blob directly.
-    await store._store.async_save({"blob": payload.hex()})
+async def test_state_store_reads_real_v1_file(hass, hass_storage):
+    """A v1 file (version: 1, plaintext hex) must load and then re-encrypt."""
+    hass_storage["fints_atruvia_state_v1-id"] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": "fints_atruvia_state_v1-id",
+        "data": {"blob": b"legacy-state".hex()},
+    }
+    store = FintsStateStore(hass, "v1-id")
+    assert await store.load() == b"legacy-state"
 
-    assert await store.load() == payload
+
+async def test_state_store_migrates_v1_file_on_next_save(hass, hass_storage):
+    """After reading a v1 file, save() must rewrite it as v2 ciphertext."""
+    hass_storage["fints_atruvia_state_v1-id"] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": "fints_atruvia_state_v1-id",
+        "data": {"blob": b"legacy-state".hex()},
+    }
+    store = FintsStateStore(hass, "v1-id")
+    assert await store.load() == b"legacy-state"
+
+    await store.save(b"new-state")
+
+    raw = hass_storage["fints_atruvia_state_v1-id"]["data"]
+    assert "ciphertext" in raw
+    assert "blob" not in raw
+    assert await store.load() == b"new-state"
+
+
+async def test_state_store_rejects_corrupt_v1_hex(hass, hass_storage):
+    """A v1 file with unparseable hex must yield None, not raise."""
+    hass_storage["fints_atruvia_state_v1-id"] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": "fints_atruvia_state_v1-id",
+        "data": {"blob": "nothex"},
+    }
+    store = FintsStateStore(hass, "v1-id")
+    assert await store.load() is None
 
 
 async def test_state_store_remove_when_none(hass):
