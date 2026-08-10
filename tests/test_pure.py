@@ -1,4 +1,5 @@
 """Tests for pure (hass-free) helpers — security-relevant behaviour."""
+
 from __future__ import annotations
 
 import hashlib
@@ -215,7 +216,12 @@ def test_validate_https_url_accepts_https(url):
 
 def test_redact_credentials_strips_sensitive_keys():
     redacted = redact_credentials(
-        {"username": "alice", "password": "hunter2", "credential_id": "abc", "other": "ok"}
+        {
+            "username": "alice",
+            "password": "hunter2",
+            "credential_id": "abc",
+            "other": "ok",
+        }
     )
     assert redacted["username"] == "***"
     assert redacted["password"] == "***"
@@ -224,9 +230,24 @@ def test_redact_credentials_strips_sensitive_keys():
 
 
 def test_transaction_hash_is_stable_and_unique():
-    txn_a = {"date": "2026-05-01", "amount": Decimal("10.00"), "purpose": "X", "creditor": "Y"}
-    txn_b = {"date": "2026-05-01", "amount": Decimal("10.00"), "purpose": "X", "creditor": "Y"}
-    txn_c = {"date": "2026-05-01", "amount": Decimal("10.01"), "purpose": "X", "creditor": "Y"}
+    txn_a = {
+        "date": "2026-05-01",
+        "amount": Decimal("10.00"),
+        "purpose": "X",
+        "creditor": "Y",
+    }
+    txn_b = {
+        "date": "2026-05-01",
+        "amount": Decimal("10.00"),
+        "purpose": "X",
+        "creditor": "Y",
+    }
+    txn_c = {
+        "date": "2026-05-01",
+        "amount": Decimal("10.01"),
+        "purpose": "X",
+        "creditor": "Y",
+    }
     assert _transaction_hash(txn_a) == _transaction_hash(txn_b)
     assert _transaction_hash(txn_a) != _transaction_hash(txn_c)
 

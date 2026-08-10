@@ -14,6 +14,7 @@ during debugging, log captures). It does NOT protect against full-disk
 theft — the master key lives next to the data. Encrypt your HA host and
 your backups.
 """
+
 from __future__ import annotations
 
 import json
@@ -128,7 +129,11 @@ class FintsCredentialStore:
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise CredentialStoreError("Credential blob is malformed") from exc
 
-        if not isinstance(decoded, dict) or "username" not in decoded or "pin" not in decoded:
+        if (
+            not isinstance(decoded, dict)
+            or "username" not in decoded
+            or "pin" not in decoded
+        ):
             raise CredentialStoreError("Credential blob is missing required fields")
         return {"username": str(decoded["username"]), "pin": str(decoded["pin"])}
 
@@ -175,7 +180,7 @@ class FintsStateStore:
             key = await async_get_master_key(self._hass)
             try:
                 return Fernet(key).decrypt(data["ciphertext"].encode("ascii"))
-            except (InvalidToken, ValueError):
+            except InvalidToken, ValueError:
                 # Corrupted blob or master-key rotation. Drop it so the next
                 # bank dialog rebuilds the state from scratch — that triggers
                 # a fresh SCA but is safer than feeding garbage to python-fints.
@@ -186,7 +191,7 @@ class FintsStateStore:
             # v1 plaintext. Decode and let the caller's next save() re-encrypt.
             try:
                 return bytes.fromhex(data["blob"])
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 return None
         return None
 

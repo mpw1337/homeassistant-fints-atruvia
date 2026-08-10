@@ -1,4 +1,5 @@
 """Config flow for fints_atruvia integration."""
+
 from __future__ import annotations
 
 import logging
@@ -243,9 +244,7 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
             )
 
         try:
-            result = await self.hass.async_add_executor_job(
-                self._client.init_system_id
-            )
+            result = await self.hass.async_add_executor_job(self._client.init_system_id)
         except Exception as exc:  # noqa: BLE001
             # Log only the exception type. python-fints errors may quote
             # bank-response content (HBCI segments can include account
@@ -320,9 +319,7 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
 
         # Fetch available accounts
         try:
-            accounts = await self.hass.async_add_executor_job(
-                self._client.get_accounts
-            )
+            accounts = await self.hass.async_add_executor_job(self._client.get_accounts)
         except Exception as exc:  # noqa: BLE001
             _LOGGER.error("Account fetch failed: %s", type(exc).__name__)
             return self.async_show_form(
@@ -346,9 +343,7 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
         # reconstruct the full IBAN. See _account_labels().
         account_options = [
             selector.SelectOptionDict(value=account.iban, label=label)
-            for account, label in zip(
-                accounts, _account_labels(accounts), strict=True
-            )
+            for account, label in zip(accounts, _account_labels(accounts), strict=True)
         ]
 
         schema = vol.Schema(
@@ -446,9 +441,7 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
     # Reauth flow
     # ------------------------------------------------------------------
 
-    async def async_step_reauth(
-        self, entry_data: dict[str, Any]
-    ) -> ConfigFlowResult:
+    async def async_step_reauth(self, entry_data: dict[str, Any]) -> ConfigFlowResult:
         """Handle reauth triggered by ConfigEntryAuthFailed."""
         self._reauth_entry = self.hass.config_entries.async_get_entry(
             self.context["entry_id"]
@@ -539,7 +532,9 @@ class FintsAtruviaOptionsFlow(OptionsFlow):
         current = self._entry.options.get(CONF_EXPOSE_FULL_DATA, False)
         schema = vol.Schema(
             {
-                vol.Required(CONF_EXPOSE_FULL_DATA, default=current): selector.BooleanSelector(),
+                vol.Required(
+                    CONF_EXPOSE_FULL_DATA, default=current
+                ): selector.BooleanSelector(),
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)

@@ -1,4 +1,5 @@
 """Data update coordinator for fints_atruvia."""
+
 from __future__ import annotations
 
 import hashlib
@@ -164,9 +165,7 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
                 fints_state=fints_state,
             )
         except InvalidUrlError as exc:
-            raise ConfigEntryAuthFailed(
-                f"Bank URL is invalid: {exc}"
-            ) from exc
+            raise ConfigEntryAuthFailed(f"Bank URL is invalid: {exc}") from exc
 
     async def async_shutdown(self) -> None:
         """
@@ -192,9 +191,7 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
             self._seen_hashes = {}
         else:
             self._seen_initialised = True
-            self._seen_hashes = {
-                iban: set(hashes) for iban, hashes in stored.items()
-            }
+            self._seen_hashes = {iban: set(hashes) for iban, hashes in stored.items()}
 
     async def _async_save_seen(self) -> None:
         """Persist the current seen-hashes snapshot to .storage."""
@@ -269,9 +266,7 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
             raise ConfigEntryAuthFailed("FinTS client not initialised")
 
         try:
-            accounts = await self.hass.async_add_executor_job(
-                self._client.get_accounts
-            )
+            accounts = await self.hass.async_add_executor_job(self._client.get_accounts)
             for iban in self._selected_accounts:
                 account = next((a for a in accounts if a.iban == iban), None)
                 if account is None:
@@ -316,7 +311,9 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
                 notification_id="fints_atruvia_reauth",
             )
             if self.data is None:
-                raise ConfigEntryAuthFailed("Bank requires initial authentication (TAN)") from e
+                raise ConfigEntryAuthFailed(
+                    "Bank requires initial authentication (TAN)"
+                ) from e
             # Intentionally return last known complete data rather than partial result.
             # Fresh data for already-processed IBANs is discarded to avoid partial state.
             return self.data

@@ -1,11 +1,16 @@
 """Sensor platform for fints_atruvia."""
+
 from __future__ import annotations
 
 import datetime
 from decimal import Decimal
 from typing import Any
 
-from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorStateClass,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -38,7 +43,7 @@ def _to_float(value: Any) -> float | None:
         return None
     try:
         return float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 
@@ -118,7 +123,9 @@ class FintsBankingSensor(CoordinatorEntity[FintsBankingCoordinator], SensorEntit
         if self.coordinator.expose_full_data:
             transactions = account_data.get("transactions", [])
             attrs["transactions"] = [
-                {**txn, "amount": float(txn["amount"])} if txn.get("amount") is not None else txn
+                {**txn, "amount": float(txn["amount"])}
+                if txn.get("amount") is not None
+                else txn
                 for txn in transactions[-10:]
             ]
         return attrs

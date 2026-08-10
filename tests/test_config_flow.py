@@ -168,9 +168,7 @@ async def test_completed_flow_closes_client(hass):
         return original_create_entry(self, **kwargs)
 
     with (
-        patch.object(
-            FintsBankingConfigFlow, "async_create_entry", _spy_create_entry
-        ),
+        patch.object(FintsBankingConfigFlow, "async_create_entry", _spy_create_entry),
         patch(
             "custom_components.fints_atruvia.async_setup_entry",
             AsyncMock(return_value=True),

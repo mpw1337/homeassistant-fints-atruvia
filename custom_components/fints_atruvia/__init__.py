@@ -1,4 +1,5 @@
 """The fints_atruvia integration."""
+
 from __future__ import annotations
 
 import hashlib
@@ -100,9 +101,7 @@ def _entry_unique_id(key: bytes, blz: str, username: str) -> str:
     return hmac.new(key, message, hashlib.sha256).hexdigest()[:16]
 
 
-async def _async_migrate_unique_ids(
-    hass: HomeAssistant, entry: ConfigEntry
-) -> None:
+async def _async_migrate_unique_ids(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Migrate legacy ``{entry_id}_{iban}[_suffix]`` unique_ids to a hashed form."""
     entry_id = entry.entry_id
     prefix = f"{entry_id}_"
@@ -112,7 +111,7 @@ async def _async_migrate_unique_ids(
         uid = reg_entry.unique_id
         if not uid.startswith(prefix):
             return None
-        remainder = uid[len(prefix):]
+        remainder = uid[len(prefix) :]
         suffix = ""
         for known in _SENSOR_SUFFIXES:
             if remainder.endswith(known):

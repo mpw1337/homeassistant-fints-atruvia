@@ -7,6 +7,7 @@ Home Assistant OS users have no convenient shell to copy the file by hand,
 which is why the Lovelace resource is registered automatically rather than
 being a documented manual step.
 """
+
 from __future__ import annotations
 
 import logging

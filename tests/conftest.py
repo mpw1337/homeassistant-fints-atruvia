@@ -1,4 +1,5 @@
 """Shared pytest fixtures for fints_atruvia tests."""
+
 from __future__ import annotations
 
 import pytest

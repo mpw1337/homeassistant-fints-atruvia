@@ -13,6 +13,7 @@ PIN exposure tightly scoped to the lifetime of an active FinTS dialog: when
 reference is the wrapper's bound provider (a closure that re-reads from the
 encrypted store on demand).
 """
+
 from __future__ import annotations
 
 import datetime
@@ -54,7 +55,7 @@ def _safe_decimal(value: Any) -> Decimal | None:
         return None
     try:
         return Decimal(text)
-    except (InvalidOperation, ValueError):
+    except InvalidOperation, ValueError:
         return None
 
 
@@ -78,7 +79,9 @@ def _balance_to_signed_decimal(balance_obj: Any) -> Decimal | None:
         return None
 
     cd_field = getattr(balance_obj, "credit_debit", None)
-    cd_value = getattr(cd_field, "value", cd_field)  # CodeField has .value, may already be str
+    cd_value = getattr(
+        cd_field, "value", cd_field
+    )  # CodeField has .value, may already be str
     return -raw if str(cd_value) == "D" else raw
 
 
@@ -116,9 +119,12 @@ class _ExtendedFinTSClient(FinTS3PinTanClient):
             return resp
         return None
 
+
 # Fallback product_id: Atruvia sometimes blocks the python-fints default.
 # This zero-padded ID is accepted by a number of Atruvia instances.
-_FALLBACK_PRODUCT_ID = "6151256F3D4F9975B877BD4A2"  # exactly 25 chars as required by FinTS
+_FALLBACK_PRODUCT_ID = (
+    "6151256F3D4F9975B877BD4A2"  # exactly 25 chars as required by FinTS
+)
 
 
 class FinTsAtruviaClient:
@@ -241,8 +247,7 @@ class FinTsAtruviaClient:
             client.fetch_tan_mechanisms()
         except ValueError as exc:
             _LOGGER.debug(
-                "fetch_tan_mechanisms raised ValueError "
-                "(expected for SCA banks): %s",
+                "fetch_tan_mechanisms raised ValueError (expected for SCA banks): %s",
                 exc,
             )
 
@@ -338,9 +343,7 @@ class FinTsAtruviaClient:
         if isinstance(segment, NeedTANResponse):
             raise TanRequiredError(segment)
         if segment is None:
-            raise ValueError(
-                f"No balance data returned for account {account.iban}"
-            )
+            raise ValueError(f"No balance data returned for account {account.iban}")
 
         balance = _balance_to_signed_decimal(getattr(segment, "balance_booked", None))
         if balance is None:
@@ -359,7 +362,9 @@ class FinTsAtruviaClient:
         if not currency:
             # Balance2 stores currency on the inner Amount1.
             booked = getattr(segment, "balance_booked", None)
-            inner_amount = getattr(booked, "amount", None) if booked is not None else None
+            inner_amount = (
+                getattr(booked, "amount", None) if booked is not None else None
+            )
             currency = getattr(inner_amount, "currency", "") or ""
 
         pending_amount = (
@@ -377,9 +382,7 @@ class FinTsAtruviaClient:
             "booking_date": _extract_booking_date(segment),
         }
 
-    def get_transactions(
-        self, account: SEPAAccount, days: int = 30
-    ) -> list[dict]:
+    def get_transactions(self, account: SEPAAccount, days: int = 30) -> list[dict]:
         """Fetch recent transactions for a single account.
 
         :param account: SEPAAccount as returned by get_accounts().
@@ -419,7 +422,9 @@ class FinTsAtruviaClient:
                 # mt940 Amount object: .amount (Decimal), .currency (str).
                 # Use _safe_decimal so empty/garbled amounts fall back to 0
                 # instead of contaminating the transactions list with strings.
-                amount_value = _safe_decimal(getattr(amount_obj, "amount", None)) or Decimal("0")
+                amount_value = _safe_decimal(
+                    getattr(amount_obj, "amount", None)
+                ) or Decimal("0")
                 currency_value: str = getattr(amount_obj, "currency", "") or ""
             else:
                 amount_value = Decimal("0")

@@ -1,4 +1,5 @@
 """Tests for the encrypted credential and FinTS-state stores."""
+
 from __future__ import annotations
 
 import pytest
