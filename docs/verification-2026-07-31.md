@@ -21,7 +21,13 @@ The items below are what the run turned up on top of that.
 
 ## 1. Legacy IBAN survives in the entity registry as `previous_unique_id`
 
-**Severity:** medium (privacy claim not fully met) · **Status:** open
+**Severity:** medium (privacy claim not fully met) · **Status:** fixed
+
+Fixed in `custom_components/fints_atruvia/__init__.py` (Task 3, commit
+`2107ed6`): `_async_migrate_unique_ids` now calls a new
+`_async_clear_previous_unique_ids` right after the registry migration, which
+walks the entry's registry rows and clears any `previous_unique_id` still
+set.
 
 `er.async_migrate_entries` records the pre-migration value, so after
 `_async_migrate_unique_ids` runs, `.storage/core.entity_registry` contains
@@ -53,7 +59,13 @@ still contain the plaintext PIN" warning (`__init__.py:176-181`).
 
 ## 2. Account picker label leaks the raw account number
 
-**Severity:** medium · **Status:** open
+**Severity:** medium · **Status:** fixed
+
+Fixed in `custom_components/fints_atruvia/config_flow.py` (Task 4, commit
+`83d73ed`): the account-number parenthetical was dropped; labels are now
+`Konto …{last4}` with a running `" (N)"` suffix only when two accounts share
+the same last four IBAN digits, produced by the new `_account_labels()`
+helper.
 
 `custom_components/fints_atruvia/config_flow.py:293`
 
@@ -76,7 +88,13 @@ masking tests in `tests/test_pure.py`.
 
 ## 3. `expose_full_data` has no effect until reload (up to 6 hours)
 
-**Severity:** medium (UX; looks like a broken toggle) · **Status:** open
+**Severity:** medium (UX; looks like a broken toggle) · **Status:** fixed
+
+Fixed in `custom_components/fints_atruvia/__init__.py` (Task 3, commit
+`2107ed6`): `async_setup_entry` now registers
+`entry.async_on_unload(entry.add_update_listener(_async_reload_entry))`,
+which reloads the entry (and thus reconnects to the bank) on any options
+change.
 
 Toggling the option in the UI writes `entry.options` immediately, but the
 sensor attributes only change on the next entity state write. There is no
@@ -101,7 +119,12 @@ instance.
 
 ## 4. Card shows the *oldest* five of the last ten transactions
 
-**Severity:** low · **Status:** open
+**Severity:** low · **Status:** fixed
+
+Fixed in `frontend/src/fints-card.js` (Task 5, commit `ef96999`): a new
+`sortTransactionsDescending()` helper sorts by date descending (index as
+tie-breaker for same-day entries) before `_renderEntity` slices the first
+five.
 
 `frontend/src/fints-card.js:149` — `transactions.slice(0, 5)` over the
 attribute list, which `sensor.py:122` fills with `transactions[-10:]` in bank
@@ -117,7 +140,12 @@ newest ones are hidden. Observed order in the running card:
 
 ## 5. Card ignores `title:` from the card config
 
-**Severity:** low (cosmetic) · **Status:** open
+**Severity:** low (cosmetic) · **Status:** fixed
+
+Fixed in `frontend/src/fints-card.js` (Task 5, commit `ef96999`):
+`_renderEntity` now honours `config.title` for the first card of a multi-entity
+config (escaped via `escapeHtml()`), falling back to `Konto {last4}` for the
+rest.
 
 `type: custom:fints-atruvia-card` with `title: "Sparda Sandbox"` rendered the
 entity friendly name (`Konto 3000`) instead. Either honour `config.title` in
@@ -127,7 +155,12 @@ entity friendly name (`Konto 3000`) instead. Either honour `config.title` in
 
 ## 6. `_mask_iban` docstring example is wrong
 
-**Severity:** trivial · **Status:** open
+**Severity:** trivial · **Status:** fixed
+
+Fixed in `custom_components/fints_atruvia/sensor.py` (commit `f92246e`,
+predates this round): the docstring example now reads
+`GB33BUKB20201555555555 -> GB33 **** **** **** **** 5555`, consistent with
+the code.
 
 `custom_components/fints_atruvia/sensor.py:18-32` documents
 `GB33BUKB20201555555555 -> DE51 **** **** **** 3922`: the example output is
@@ -138,7 +171,11 @@ four groups, not three — the real output is `DE89 **** **** **** **** 3000`.
 
 ## 7. Local card build artifact is stale
 
-**Severity:** low (local only) · **Status:** open
+**Severity:** low (local only) · **Status:** fixed
+
+`frontend/src/fints-card.js`, `custom_components/fints_atruvia/www/fints-atruvia-card.js`
+and `config/www/fints-atruvia-card.js` are byte-identical again (same md5)
+after Task 5's `npm run build` (commit `ef96999`).
 
 `config/www/fints-atruvia-card.js` (2026-05-13 19:49) predates
 `frontend/src/fints-card.js` (2026-05-15 16:30), so the local dev instance
