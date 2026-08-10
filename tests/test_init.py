@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import attr
 from homeassistant.helpers import entity_registry as er
@@ -12,6 +12,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.fints_atruvia import (
     CONF_BLZ,
     CONF_CREDENTIAL_ID,
+    CONF_EXPOSE_FULL_DATA,
     CONF_PRODUCT_ID,
     CONF_SELECTED_ACCOUNTS,
     CONF_URL,
@@ -20,6 +21,7 @@ from custom_components.fints_atruvia import (
     _async_reload_entry,
     _entry_unique_id,
     async_migrate_entry,
+    async_setup_entry,
     iban_unique_id,
 )
 from custom_components.fints_atruvia.storage import (
@@ -110,6 +112,40 @@ async def test_options_update_triggers_reload(hass):
     hass.config_entries.async_reload = AsyncMock(return_value=True)
 
     await _async_reload_entry(hass, entry)
+
+    hass.config_entries.async_reload.assert_awaited_once_with(entry.entry_id)
+
+
+async def test_setup_entry_registers_the_options_update_listener(hass):
+    """Fix 1: async_setup_entry must register the listener, not just define it."""
+    # The test above calls _async_reload_entry directly, so it stays green even
+    # if add_update_listener is dropped from async_setup_entry. This one drives
+    # the real setup path and then flips an option.
+    entry = _make_entry()
+    entry.add_to_hass(hass)
+
+    coordinator = MagicMock()
+    coordinator.async_init = AsyncMock()
+    coordinator.async_load_seen = AsyncMock()
+    coordinator.async_config_entry_first_refresh = AsyncMock()
+    hass.config_entries.async_forward_entry_setups = AsyncMock()
+
+    # Both are imported inside async_setup_entry, so patch them at the source.
+    with (
+        patch(
+            "custom_components.fints_atruvia.frontend.async_register_card",
+            AsyncMock(),
+        ),
+        patch(
+            "custom_components.fints_atruvia.coordinator.FintsBankingCoordinator",
+            return_value=coordinator,
+        ),
+    ):
+        assert await async_setup_entry(hass, entry) is True
+
+    hass.config_entries.async_reload = AsyncMock(return_value=True)
+    hass.config_entries.async_update_entry(entry, options={CONF_EXPOSE_FULL_DATA: True})
+    await hass.async_block_till_done()
 
     hass.config_entries.async_reload.assert_awaited_once_with(entry.entry_id)
 
