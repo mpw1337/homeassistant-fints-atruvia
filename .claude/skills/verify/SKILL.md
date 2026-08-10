@@ -51,8 +51,10 @@ SB_ROOT=... .venv/bin/python $H/ws.py '{"cmds":[{"type":"config_entries/get","do
 SB_ROOT=... .venv/bin/python $H/ws.py '{"cmds":[],"event":"fints_atruvia_new_transaction","secs":40}'
 ```
 
-Options flow (the `expose_full_data` toggle) — note the entry does **not**
-reload itself, so reload explicitly or you will read stale attributes:
+Options flow (the `expose_full_data` toggle) — the entry reloads itself via
+`entry.add_update_listener(_async_reload_entry)`, so no manual reload step
+follows: read the sensor attributes right after the options write and confirm
+they already reflect the new toggle.
 
 ```bash
 FID=$($H/run.sh api /api/config/config_entries/options/flow -X POST \
@@ -60,7 +62,6 @@ FID=$($H/run.sh api /api/config/config_entries/options/flow -X POST \
   | python3 -c "import sys,json;print(json.load(sys.stdin)['flow_id'])")
 $H/run.sh api /api/config/config_entries/options/flow/$FID -X POST \
   -H 'Content-Type: application/json' -d '{"expose_full_data":true}'
-$H/run.sh api /api/config/config_entries/entry/01KSANDBOX000000000000FINT/reload -X POST
 ```
 
 Fake-bank switches — create/remove files in `$SB_ROOT/flags`, effective on the
@@ -77,12 +78,18 @@ next poll, no restart:
 
 ## Flows worth driving
 
-- **Migration** — `.storage/core.config_entries` goes to `version 2` with only
+- **Migration** — `.storage/core.config_entries` goes to `version 3` with only
   `credential_id`; `fints_atruvia_master_key` / `_credentials_*` / `_state_*`
   exist at mode `0600`; grep the sandbox `.storage` for `SandboxPIN12345` → no
-  hits.
-- **Unique-IDs** — registry rows become `{entry_id}_{16 hex}` with
+  hits. The v1 sandbox entry's `unique_id` is the historical cleartext
+  `99999999_sandboxuser` — grep for `sandboxuser` too: no hits, and the entry's
+  `unique_id` is now a 16-hex HMAC (`_entry_unique_id`, keyed with the master
+  Fernet key) instead.
+- **Entity unique-IDs** — registry rows become `{entry_id}_{16 hex}` with
   `_income_30d` / `_expense_30d` preserved and `_reauth_button` untouched.
+- **Config-entry unique-ID** — distinct from the entity ones above: it is the
+  HMAC set on the config entry itself during v2→v3 migration, not an entity
+  registry row. Don't confuse the two when grepping.
 - **Disclosure toggle** — off: no `transactions` attribute and events carry
   only `iban_masked`/`iban_last4`/amount/date/hash; on (after reload):
   `purpose` + `applicant_name` appear in both.
@@ -149,4 +156,5 @@ care about inside the first five (clear `extra1`/`extra2` when using `xss`).
 - Playwright MCP only writes inside the repo, e.g. `.playwright-mcp/` — clean
   up screenshots afterwards or mention them as evidence.
 
-Findings from the 2026-07-31 run: `docs/verification-2026-07-31.md`.
+Findings from prior runs: `docs/verification-2026-07-31.md` and
+`docs/verification-2026-08-10.md`.

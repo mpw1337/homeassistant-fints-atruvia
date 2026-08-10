@@ -103,7 +103,7 @@ entries = {
         "source": "user",
         "subentries": [],
         "title": "Sandbox Bank",
-        "unique_id": None,
+        "unique_id": "99999999_sandboxuser",
         "version": 1,
     }]},
 }
@@ -146,4 +146,7 @@ registry = {
 (SB / ".storage" / "core.entity_registry").write_text(json.dumps(registry, indent=1))
 
 print(f"sandbox: {SB}")
-print(f"entry {ENTRY}: version 1, plaintext creds, 4 legacy unique_ids")
+print(
+    f"entry {ENTRY}: version 1, plaintext creds, "
+    "legacy unique_id 99999999_sandboxuser, 4 legacy entity unique_ids"
+)
