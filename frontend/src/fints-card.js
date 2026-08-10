@@ -1,10 +1,21 @@
-// All values reaching the HTML template MUST be wrapped in escapeHtml().
-// Bank-controlled fields (purpose, applicant_name, IBAN) and HA-controlled
-// fields (state, attribute values) are treated as untrusted by default.
+// All values reaching the HTML template MUST be wrapped in escapeHtml()
+// (element content) or escapeAttr() (quoted attribute values). Bank-controlled
+// fields (purpose, applicant_name, IBAN) and HA-controlled fields (state,
+// attribute values) are treated as untrusted by default.
 function escapeHtml(str) {
   const div = document.createElement("div");
   div.textContent = String(str ?? "");
   return div.innerHTML;
+}
+
+// escapeHtml() relies on the HTML fragment serializer, which only escapes
+// `&`, `<`, `>` (and NBSP) — quotes are left alone because they're only
+// special inside an attribute value. Interpolating into `attr="${...}"`
+// therefore needs `"` (and, defensively, `'`) escaped too, on top of
+// escapeHtml()'s output, or a `"` in untrusted data (e.g. a bank-supplied
+// IBAN) could close the attribute early and inject markup.
+function escapeAttr(str) {
+  return escapeHtml(str).replaceAll('"', "&quot;").replaceAll("'", "&#39;");
 }
 
 // `tx.date` is the ISO string api.py emits; fall back the same way
@@ -220,10 +231,12 @@ class FintsAtruviaCard extends HTMLElement {
 
     // Only the first card in a multi-entity `entities:` config gets the
     // user-configured title — otherwise every card would share one header.
+    // This lands inside the `header="..."` attribute, so it needs
+    // escapeAttr() rather than escapeHtml() (see comment on escapeAttr).
     const headerText =
       isFirst && this._config.title
-        ? escapeHtml(this._config.title)
-        : `Konto ${escapeHtml(last4)}`;
+        ? escapeAttr(this._config.title)
+        : `Konto ${escapeAttr(last4)}`;
 
     return `
       <ha-card header="${headerText}">
