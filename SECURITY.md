@@ -55,14 +55,14 @@ NetKey und PIN werden mit **Fernet (AES-128-CBC + HMAC-SHA256)** verschlüsselt:
 
 Per `deconstruct(including_private=True)` werden `system_id`, BPD und UPD nach jedem erfolgreichen Update **Fernet-verschlüsselt** auf das Filesystem (Mode 0600) persistiert. Per python-fints-Vertrag enthält der Blob **keinen** PIN, aber Kontonummern und Bank-Parameter — daher dieselbe Schlüsselbasis wie für Credentials. Vorteil: Bank löst nicht bei jedem Poll-Zyklus SCA aus → weniger TAN-Fatigue, weniger User-Klicks, kleineres Phishing-Fenster.
 
-Alte (v1) Plaintext-Hex-Blobs werden einmalig beim Laden gelesen und beim nächsten Save automatisch verschlüsselt überschrieben.
+Alte (v1) Plaintext-Hex-Blobs werden einmalig beim Laden gelesen und beim nächsten Save automatisch verschlüsselt überschrieben — möglich macht das erst `_MigratingStore` in `storage.py`, da HAs Standard-`Store._async_migrate_func` bei einem Major-Version-Sprung sonst mit `NotImplementedError` abbricht und das Setup für alle mit einer echten v1-Datei blockiert hätte.
 
 ### 5. IBAN-Maskierung — flächendeckend
 
 - **Sensor-Attribute (`iban`):** `DE51 **** **** **** 3922` statt voller IBAN.
 - **`fints_atruvia_new_transaction` Events:** Nur `iban_masked` und `iban_last4`, keine volle IBAN.
-- **Entity-Registry (`unique_id`):** SHA-256-Hash der IBAN (mit `entry_id` als Salt), 16 Hex-Zeichen. Die volle IBAN steht damit weder in `home-assistant_v2.db` noch im Event-Bus noch in `core.entity_registry`.
-- **Config-Flow Account-Picker:** Label zeigt nur `Konto …3922 (12345678)`, die volle IBAN reist nicht durch den WebSocket-Frontend-Kanal.
+- **Entity-Registry (`unique_id`):** SHA-256-Hash der IBAN (mit `entry_id` als Salt), 16 Hex-Zeichen. Die volle IBAN steht damit weder in `home-assistant_v2.db` noch im Event-Bus noch im aktiven `unique_id`-Feld von `core.entity_registry`. *Restrisiko:* HAs `er.async_migrate_entries` schreibt den Wert vor der Migration zusätzlich nach `previous_unique_id` — `_async_clear_previous_unique_ids` in `__init__.py` räumt dieses Feld direkt danach leer, aber HA-Backups, die vor diesem Fix angelegt wurden, können die Klartext-IBAN dort noch enthalten. `core.entity_registry` liegt außerdem mit Mode 0644 vor, anders als die eigenen Stores der Integration (0600).
+- **Config-Flow Account-Picker:** Label zeigt nur `Konto …3922`, mit einer nicht-identifizierenden laufenden Nummer (` (2)`) nur dann, wenn zwei angebotene Konten dieselben letzten vier Ziffern teilen. Die Kontonummer wurde bewusst aus dem Label entfernt, da sie zusammen mit der BLZ (die aus demselben Flow in `entry.data` liegt) die volle IBAN rekonstruierbar gemacht hätte. Siehe `_account_labels()` in `config_flow.py`.
 
 ### 6. Verwendungszweck und Empfänger — Opt-In statt Default
 
@@ -76,18 +76,22 @@ Die Lovelace-Karte erkennt automatisch, ob das Attribut `transactions` verfügba
 
 Bei `ConfigEntryAuthFailed` (Decrypt-Fehler, Bank lehnt PIN ab, abgelaufene 90-Tage-SCA) öffnet HA automatisch einen Reauth-Dialog. Die Config-Entry, ausgewählte Konten und gesehene Transaktions-Hashes bleiben erhalten — keine Notwendigkeit, die Integration zu löschen. Die `credential_id` bleibt im Reauth stabil, sodass der vorhandene verschlüsselte Blob überschrieben statt verwaist wird und der gecachte FinTS-State erhalten bleibt.
 
-### 8. Migration v1 → v2 (idempotent)
+### 8. Migration v1 → v2 → v3 (idempotent)
 
 Bestehende Configs mit Klartext-PIN in `core.config_entries` werden beim nächsten HA-Start automatisch in den verschlüsselten Store überführt. Die alten Klartext-Felder werden via `async_update_entry` aus dem Config-Entry entfernt. Die Migration:
 
 - prüft, ob bereits eine `credential_id` vorhanden ist (idempotent bei Retry nach Crash),
 - verifiziert nach `async_update_entry`, dass `password`/`username` wirklich weg sind, und scheitert ansonsten lautstark.
 
+Eine v1-Entry durchläuft beide Schritte in einem Aufruf und landet direkt bei v3.
+
 **Wichtig:** HA-Backups, die *vor* der Migration angelegt wurden, enthalten weiterhin den Klartext-PIN. Diese sollten gelöscht oder neu mit Passwort-Schutz erzeugt werden.
+
+Der Config-Flow ist inzwischen bei `VERSION = 3`: die `unique_id` der Config-Entry war früher der Klartext `"{blz}_{username}"`, der damit im Config-Entry-Datensatz (`.storage/core.config_entries`) landete und über die Config-Entries-WebSocket-API ausgeliefert wurde. Der v2→v3-Schritt ersetzt ihn durch `_entry_unique_id(blz, username)` — einen ungesalzenen SHA-256-Hash, 16 Hex-Zeichen. Ungesalzen mit Absicht: `_abort_if_unique_id_configured` muss dasselbe BLZ/Login-Paar über verschiedene Flows hinweg wiedererkennen. Lässt sich der verschlüsselte Credential-Blob nicht entschlüsseln (z. B. verlorener Master-Key), behält die Migration die alte Klartext-`unique_id` bei und hebt nur die Versionsnummer an, statt das Setup zu blockieren — das ist keine neue Exposition, da der Wert vorher ohnehin schon unverschlüsselt in `core.config_entries` lag.
 
 ### 9. XSS-Schutz in der Lovelace-Karte
 
-Alle dynamischen Strings (Verwendungszwecke, Empfängernamen, IBANs, Beträge, Datumsangaben, Entity-IDs) werden via `textContent`→`innerHTML`-Pattern in `escapeHtml()` escaped, bevor sie ins Shadow DOM eingefügt werden. Konkret werden auch die NaN-Fallbacks (`stateObj.state` bei nicht-numerischem Balance, `tx.amount` bei nicht-parsbarer Transaktion) escaped — das war in v0.2.0 noch unbehandelt.
+Alle dynamischen Strings (Verwendungszwecke, Empfängernamen, IBANs, Beträge, Datumsangaben, Entity-IDs) werden vor dem Einfügen ins Shadow DOM escaped, aber nicht mit derselben Funktion: `escapeHtml()` (textContent→innerHTML-Pattern) für Element-Inhalte, `escapeAttr()` für Werte in gequoteten Attributen. Der Grund für die Trennung ist, dass `escapeHtml()` ein reiner Text-Kontext-Escaper ist — er weist den String `textContent` zu und liest `innerHTML` zurück, wodurch der HTML-Serializer `"` und `'` unangetastet lässt. Für die eine Stelle mit Attribut-Kontext-Interpolation (`<ha-card header="...">`, die sowohl den per `title:`-Option konfigurierten Titel als auch die bank-abgeleiteten letzten vier IBAN-Ziffern trägt) escaped `escapeAttr()` zusätzlich Anführungszeichen. Konkret werden auch die NaN-Fallbacks (`stateObj.state` bei nicht-numerischem Balance, `tx.amount` bei nicht-parsbarer Transaktion) escaped — das war in v0.2.0 noch unbehandelt.
 
 Source-Maps werden im Production-Build nicht erzeugt (`rollup.config.js: sourcemap: false`), sodass der Browser-Inspector keine internen Code-Pfade preisgibt. Wer aus einer früheren Version eine `fints-atruvia-card.js.map` in `config/www/` liegen hat, sollte sie löschen.
 
