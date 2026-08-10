@@ -18,8 +18,9 @@ from __future__ import annotations
 
 import datetime
 import logging
+from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
-from typing import Any, Callable
+from typing import Any
 
 from fints.client import FinTS3PinTanClient, NeedTANResponse
 from fints.models import SEPAAccount
@@ -206,7 +207,7 @@ class FinTsAtruviaClient:
             return None
         try:
             return self._client.deconstruct(including_private=True)
-        except Exception:  # noqa: BLE001
+        except Exception:
             _LOGGER.debug("Failed to deconstruct FinTS state", exc_info=True)
             return None
 
@@ -290,7 +291,7 @@ class FinTsAtruviaClient:
             return
         try:
             self._client.__exit__(None, None, None)
-        except Exception:  # noqa: BLE001
+        except Exception:
             _LOGGER.debug("Error closing FinTS dialog", exc_info=True)
 
     def complete_tan(self, tan_response: NeedTANResponse, tan: str = "") -> None:
@@ -424,10 +425,10 @@ class FinTsAtruviaClient:
                 # instead of contaminating the transactions list with strings.
                 amount_value = _safe_decimal(
                     getattr(amount_obj, "amount", None)
-                ) or Decimal("0")
+                ) or Decimal(0)
                 currency_value: str = getattr(amount_obj, "currency", "") or ""
             else:
-                amount_value = Decimal("0")
+                amount_value = Decimal(0)
                 currency_value = ""
 
             # transaction_details holds the structured purpose/reference text

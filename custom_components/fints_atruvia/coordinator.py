@@ -9,6 +9,8 @@ from decimal import Decimal
 
 from homeassistant.components.persistent_notification import (
     async_create as pn_async_create,
+)
+from homeassistant.components.persistent_notification import (
     async_dismiss as pn_async_dismiss,
 )
 from homeassistant.config_entries import ConfigEntry
@@ -64,8 +66,8 @@ def _transaction_hash(txn: dict) -> str:
 
 def _compute_stats(transactions: list[dict]) -> dict:
     """Aggregate income / expense / count over a transaction list."""
-    income = Decimal("0")
-    expense = Decimal("0")
+    income = Decimal(0)
+    expense = Decimal(0)
     for txn in transactions:
         amount = txn.get("amount")
         if amount is None:

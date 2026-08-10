@@ -29,7 +29,7 @@ def _make_sensor(expose_full_data: bool, account_data: dict) -> FintsBankingSens
     coord.is_2fa_pending = False
     sensor = FintsBankingSensor.__new__(FintsBankingSensor)
     sensor.coordinator = coord
-    sensor._iban = _FULL_IBAN  # noqa: SLF001
+    sensor._iban = _FULL_IBAN
     return sensor
 
 

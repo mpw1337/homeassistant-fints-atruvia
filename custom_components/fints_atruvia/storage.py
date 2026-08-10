@@ -22,7 +22,6 @@ import logging
 from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
-
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 

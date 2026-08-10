@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fints.models import SEPAAccount
-
 from homeassistant.config_entries import SOURCE_USER
 from homeassistant.data_entry_flow import FlowResultType, UnknownFlow
 
@@ -126,15 +125,15 @@ async def test_abandoned_flow_closes_client(hass):
 
     # Private accessor on purpose: we need the flow *object* to re-invoke
     # async_remove below, and async_progress() only hands out dicts.
-    flow = hass.config_entries.flow._progress[flow_id]  # noqa: SLF001
-    assert flow._client is client  # noqa: SLF001
+    flow = hass.config_entries.flow._progress[flow_id]
+    assert flow._client is client
 
     hass.config_entries.flow.async_abort(flow_id)
     # close() runs in the executor and is not awaited by the @callback.
     await hass.async_block_till_done(wait_background_tasks=True)
 
     assert client.close.call_count == 1
-    assert flow._client is None  # noqa: SLF001
+    assert flow._client is None
 
     # HA itself cannot abort twice (the flow is gone from _progress), but the
     # attribute nulling above is what guarantees close() stays single-shot.
@@ -158,12 +157,12 @@ async def test_completed_flow_closes_client(hass):
     client = _client_mock()
     flow_id = await _flow_to_account_picker(hass, client)
 
-    flow = hass.config_entries.flow._progress[flow_id]  # noqa: SLF001
+    flow = hass.config_entries.flow._progress[flow_id]
 
     closes_at_entry_creation: list[int] = []
     original_create_entry = FintsBankingConfigFlow.async_create_entry
 
-    def _spy_create_entry(self, **kwargs):  # noqa: ANN001, ANN003, ANN202
+    def _spy_create_entry(self, **kwargs):
         closes_at_entry_creation.append(client.close.call_count)
         return original_create_entry(self, **kwargs)
 
@@ -182,7 +181,7 @@ async def test_completed_flow_closes_client(hass):
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert closes_at_entry_creation == [1]
     assert client.close.call_count == 1
-    assert flow._client is None  # noqa: SLF001
+    assert flow._client is None
     # Sanity check that the close happened on the real success path: the entry
     # exists and carries only the credential_id, no PIN.
     entry_data = result["data"]

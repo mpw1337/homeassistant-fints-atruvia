@@ -70,7 +70,7 @@ def iban_unique_id(entry_id: str, iban: str) -> str:
     collision resistance inside a single entry. Backups taken before this fix
     shipped may still contain the plaintext IBAN under ``previous_unique_id``.
     """
-    return hashlib.sha256(f"{entry_id}|{iban}".encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(f"{entry_id}|{iban}".encode()).hexdigest()[:16]
 
 
 def _entry_unique_id(key: bytes, blz: str, username: str) -> str:

@@ -9,7 +9,6 @@ from urllib.parse import urlparse
 
 import voluptuous as vol
 from fints.client import NeedTANResponse
-
 from homeassistant.config_entries import (
     ConfigEntry,
     ConfigFlow,

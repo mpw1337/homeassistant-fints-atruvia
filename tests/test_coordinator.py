@@ -52,7 +52,7 @@ def _make_coordinator(hass, selected_accounts: list[str]) -> FintsBankingCoordin
     entry = _make_entry(selected_accounts)
     entry.add_to_hass(hass)
     coordinator = FintsBankingCoordinator(hass, entry)
-    coordinator._client = MagicMock()  # noqa: SLF001
+    coordinator._client = MagicMock()
     # Avoid persisting a MagicMock as the FinTS state blob on a successful update.
     coordinator._client.deconstruct.return_value = None
     return coordinator
@@ -67,8 +67,8 @@ def _balance() -> dict:
         "balance": Decimal("100.00"),
         "currency": "EUR",
         "available_balance": Decimal("100.00"),
-        "balance_pending": Decimal("0"),
-        "pending_amount": Decimal("0"),
+        "balance_pending": Decimal(0),
+        "pending_amount": Decimal(0),
         "booking_date": "2026-08-01",
     }
 
@@ -150,7 +150,7 @@ async def test_no_lost_events_when_later_account_fails(hass):
 async def test_async_shutdown_wipes_pin_closes_client_and_calls_super(hass):
     """Fix 3: async_shutdown must wipe the PIN, close the client, and call super()."""
     coordinator = _make_coordinator(hass, [_IBAN1])
-    coordinator._pin = "1234"  # noqa: S105
+    coordinator._pin = "1234"
     mock_client = coordinator._client
 
     await coordinator.async_shutdown()
