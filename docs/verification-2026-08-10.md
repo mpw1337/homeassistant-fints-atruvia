@@ -3,16 +3,18 @@
 Follow-up round addressing the eight findings in
 [`verification-2026-07-31.md`](verification-2026-07-31.md). Findings #1–#7
 from that document are now `fixed`; #8 is unchanged (dev-environment only).
+This round also turned up and fixed one additional issue not present in the
+prior report — see finding #8 below.
 
 **Method:** static code review of `custom_components/fints_atruvia/` plus the
 existing and newly added unit tests (`PYTHONPATH=$PWD .venv/bin/pytest -q`).
 No real Home Assistant instance was started and no runtime harness was run
 for this round — the `.claude/skills/verify/` runtime verification (the
-method used for the 2026-07-31 report) is still outstanding for these seven
+method used for the 2026-07-31 report) is still outstanding for these eight
 fixes. Treat the items below as reviewed against the source and against unit
 tests, not against a running HA instance.
 
-Seven bugs were found during that review and fixed in this round, on branch
+Eight bugs were found during that review and fixed in this round, on branch
 `fix/verification-findings-2026-08-10`:
 
 ---
@@ -123,10 +125,16 @@ neither encrypted nor masked — it is written in cleartext to
 `.storage/core.config_entries` and returned by the `config/config_entries/get`
 WebSocket API to any client with read access.
 
-**Fix:** added `_entry_unique_id(blz, username)` in `__init__.py` — same
-SHA-256-truncate-to-16-hex pattern as `iban_unique_id`, but unsalted, since it
-must be reproducible from `blz`+`username` alone for both new entries and the
-migration of existing ones. `async_step_user` now sets the unique_id via
+**Fix:** added `_entry_unique_id(key, blz, username)` in `__init__.py` — an
+HMAC-SHA256 keyed by the integration's master Fernet key, with a
+`entry_unique_id|` domain-separation prefix, truncated to 16 hex chars. A
+plain unsalted hash (as first implemented) would have been offline
+brute-forceable, since the BLZ is cleartext in the same storage file and
+NetKey logins are short; keying the hash with the master Fernet key (already
+present on disk for credential encryption) closes that gap. The value stays
+reproducible within one install — both call sites run async with `hass`
+available and fetch the persistent key first — which is all the dedup for
+new entries and the migration of existing ones need. `async_step_user` now sets the unique_id via
 `self.async_set_unique_id(_entry_unique_id(...))`; the config-flow `VERSION`
 was bumped to 3, with a new v2→v3 migration step in `async_migrate_entry`
 that decrypts the stored credential, rehashes the unique_id, and falls back
@@ -158,9 +166,34 @@ completion path (Task 4, commit `83d73ed`).
 
 ---
 
+## 8. Card header attribute broke out of its quotes on a `"` in the title or IBAN
+
+**Severity:** medium (attribute-context XSS) · **Status:** fixed
+
+`frontend/src/fints-card.js`'s `_renderEntity` interpolated the
+user-configured `title:` and the bank-supplied `last4` into
+`<ha-card header="${headerText}">` via `escapeHtml()`. `escapeHtml()` only
+escapes `&`, `<`, `>` (and NBSP) — the characters the HTML serializer treats
+as special in element *text content* — because quotes are only special
+inside an attribute value, so it doesn't escape `"` at all. A `"` in the
+configured title, or in a bank-supplied IBAN reaching `last4`, could close
+the `header="..."` attribute early and inject arbitrary attributes (or
+markup) before the string reached `shadowRoot.innerHTML`.
+
+**Fix:** added a dedicated `escapeAttr()` helper (`escapeHtml()`'s output
+plus `.replaceAll('"', "&quot;").replaceAll("'", "&#39;")`) and routed both
+branches of the `header="${headerText}"` interpolation through it instead of
+`escapeHtml()`, in `frontend/src/fints-card.js` and the built
+`custom_components/fints_atruvia/www/fints-atruvia-card.js` (commit
+`f01b7ed`). The remaining `class="${...}"` interpolations in the same file
+were audited and confirmed to carry only fixed local constants, not
+untrusted data, so they don't need the same treatment.
+
+---
+
 ## Not yet re-verified at runtime
 
-The seven fixes above are covered by unit tests and were reviewed against
+The eight fixes above are covered by unit tests and were reviewed against
 the source, but none of them has been exercised against a running Home
 Assistant instance yet. In particular, worth confirming with
 `.claude/skills/verify/` before the next release:

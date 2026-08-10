@@ -144,8 +144,12 @@ newest ones are hidden. Observed order in the running card:
 
 Fixed in `frontend/src/fints-card.js` (Task 5, commit `ef96999`):
 `_renderEntity` now honours `config.title` for the first card of a multi-entity
-config (escaped via `escapeHtml()`), falling back to `Konto {last4}` for the
-rest.
+config, falling back to `Konto {last4}` for the rest. The interpolation lands
+inside the `header="..."` HTML attribute, so it goes through a dedicated
+`escapeAttr()` helper (`escapeHtml()` plus `&quot;`/`&#39;` escaping) rather
+than plain `escapeHtml()` — added in commit `f01b7ed` after that gap was
+found; see finding #8 in
+[`verification-2026-08-10.md`](verification-2026-08-10.md).
 
 `type: custom:fints-atruvia-card` with `title: "Sparda Sandbox"` rendered the
 entity friendly name (`Konto 3000`) instead. Either honour `config.title` in
