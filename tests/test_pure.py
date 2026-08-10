@@ -4,9 +4,13 @@ from __future__ import annotations
 from decimal import Decimal
 
 import pytest
+from fints.models import SEPAAccount
 
-from custom_components.fints_atruvia import iban_unique_id
-from custom_components.fints_atruvia.config_flow import _validate_https_url
+from custom_components.fints_atruvia import _entry_unique_id, iban_unique_id
+from custom_components.fints_atruvia.config_flow import (
+    _account_labels,
+    _validate_https_url,
+)
 from custom_components.fints_atruvia.coordinator import (
     _compute_stats,
     _mask_iban_for_event,
@@ -14,6 +18,16 @@ from custom_components.fints_atruvia.coordinator import (
 )
 from custom_components.fints_atruvia.sensor import _mask_iban
 from custom_components.fints_atruvia.storage import redact_credentials
+
+
+def _account(iban: str, accountnumber: str = "0000123456") -> SEPAAccount:
+    return SEPAAccount(
+        iban=iban,
+        bic="GENODEF1XXX",
+        accountnumber=accountnumber,
+        subaccount=None,
+        blz="12345678",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +85,66 @@ def test_iban_unique_id_differs_across_ibans():
     a = iban_unique_id("entry1", "GB33BUKB20201555555555")
     b = iban_unique_id("entry1", "DE51550905000000233923")
     assert a != b
+
+
+def test_entry_unique_id_does_not_leak_login_or_blz():
+    uid = _entry_unique_id("12345678", "netkey1")
+    assert "netkey1" not in uid
+    assert "12345678" not in uid
+    assert len(uid) == 16
+    assert all(c in "0123456789abcdef" for c in uid)
+
+
+def test_entry_unique_id_is_stable():
+    a = _entry_unique_id("12345678", "netkey1")
+    b = _entry_unique_id("12345678", "netkey1")
+    assert a == b
+
+
+def test_entry_unique_id_differs_across_usernames():
+    assert _entry_unique_id("12345678", "netkey1") != _entry_unique_id(
+        "12345678", "netkey2"
+    )
+
+
+def test_entry_unique_id_differs_across_blz():
+    assert _entry_unique_id("12345678", "netkey1") != _entry_unique_id(
+        "87654321", "netkey1"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Account picker labels
+# ---------------------------------------------------------------------------
+
+
+def test_account_labels_never_expose_account_number():
+    accounts = [
+        _account("DE51550905000000233922", accountnumber="0000123456"),
+        _account("GB33BUKB20201555555555", accountnumber="0000999999"),
+    ]
+    labels = _account_labels(accounts)
+    assert not any("0000123456" in label for label in labels)
+    assert not any("0000999999" in label for label in labels)
+
+
+def test_account_labels_disambiguate_same_last4():
+    accounts = [
+        _account("DE51550905000001233000", accountnumber="1"),
+        _account("DE51550905000009993000", accountnumber="2"),
+    ]
+    labels = _account_labels(accounts)
+    assert len(set(labels)) == len(labels)
+    assert all(label.startswith("Konto …3000") for label in labels)
+
+
+def test_account_labels_unique_last4_stay_plain():
+    accounts = [
+        _account("DE51550905000000233922", accountnumber="1"),
+        _account("GB33BUKB20201555555555", accountnumber="2"),
+    ]
+    labels = _account_labels(accounts)
+    assert labels == ["Konto …3922", "Konto …5555"]
 
 
 # ---------------------------------------------------------------------------

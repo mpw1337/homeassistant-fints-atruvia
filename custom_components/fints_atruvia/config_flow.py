@@ -26,8 +26,9 @@ from . import (
     CONF_SELECTED_ACCOUNTS,
     CONF_URL,
     DOMAIN,
+    _entry_unique_id,
 )
-from .api import FinTsAtruviaClient, InvalidUrlError
+from .api import FinTsAtruviaClient, InvalidUrlError, SEPAAccount
 from .storage import CredentialStoreError, FintsCredentialStore
 
 _LOGGER = logging.getLogger(__name__)
@@ -100,10 +101,39 @@ def _validate_https_url(url: str) -> str | None:
     return None
 
 
+def _account_labels(accounts: list[SEPAAccount]) -> list[str]:
+    """
+    Return display labels for the account picker, one per account.
+
+    Masked to the IBAN's last four digits only — the label travels through
+    the WebSocket form to the browser (visible via DevTools to anyone with
+    admin access), and the BLZ sits in ``entry.data`` from the same flow, so
+    anything more specific (account number, subaccount, BIC) would let the
+    full IBAN be reconstructed. When two or more offered accounts share the
+    same last four digits, a non-identifying running number is appended so
+    the options stay distinguishable.
+    """
+    last4_counts: dict[str, int] = {}
+    for account in accounts:
+        last4 = account.iban[-4:]
+        last4_counts[last4] = last4_counts.get(last4, 0) + 1
+
+    seen: dict[str, int] = {}
+    labels: list[str] = []
+    for account in accounts:
+        last4 = account.iban[-4:]
+        label = f"Konto …{last4}"
+        if last4_counts[last4] > 1:
+            seen[last4] = seen.get(last4, 0) + 1
+            label = f"{label} ({seen[last4]})"
+        labels.append(label)
+    return labels
+
+
 class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for fints_atruvia."""
 
-    VERSION = 2
+    VERSION = 3
 
     _credentials: dict[str, Any]
     _client: FinTsAtruviaClient | None
@@ -116,6 +146,23 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
         self._client = None
         self._tan_response = None
         self._reauth_entry = None
+
+    @callback
+    def async_remove(self) -> None:
+        """
+        Close a still-open FinTS client if the flow is abandoned.
+
+        HA calls this synchronously from ``_async_remove_flow_progress`` when
+        the dialog is closed without completing setup. Without it, the
+        client — and the PIN python-fints holds internally — would stay
+        referenced on this (now orphaned) flow object until HA later garbage
+        collects it. ``close()`` is blocking, so it goes through the executor
+        rather than running inline here.
+        """
+        client = self._client
+        self._client = None
+        if client is not None:
+            self.hass.async_add_executor_job(client.close)
 
     # ------------------------------------------------------------------
     # Step 1: user credentials
@@ -146,7 +193,7 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
             if not errors:
                 self._credentials = user_input
                 await self.async_set_unique_id(
-                    f"{user_input['blz']}_{user_input['username']}"
+                    _entry_unique_id(user_input["blz"], user_input["username"])
                 )
                 self._abort_if_unique_id_configured()
                 return await self.async_step_sync()
@@ -286,13 +333,15 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
 
         # Mask the displayed IBAN — only the value (kept server-side via
         # selected_accounts) needs the full IBAN. The label travels through
-        # the WebSocket form to the browser and can be sniffed via DevTools.
+        # the WebSocket form to the browser and can be sniffed via DevTools,
+        # so it must not carry the account number: combined with the BLZ
+        # (already visible in entry.data from this same flow), that would
+        # reconstruct the full IBAN. See _account_labels().
         account_options = [
-            selector.SelectOptionDict(
-                value=account.iban,
-                label=f"Konto …{account.iban[-4:]} ({account.accountnumber})",
+            selector.SelectOptionDict(value=account.iban, label=label)
+            for account, label in zip(
+                accounts, _account_labels(accounts), strict=True
             )
-            for account in accounts
         ]
 
         schema = vol.Schema(
@@ -314,6 +363,16 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
 
     async def _finish_setup(self, selected: list[str]) -> ConfigFlowResult:
         """Persist credentials encrypted and create / update the config entry."""
+        # The FinTS dialog's last bank access (get_accounts / complete_tan)
+        # already happened before this step runs — release the client (and
+        # the PIN python-fints holds for it) now, in both the reauth and the
+        # new-entry branch below, rather than leaving it referenced on the
+        # flow object until HA discards it.
+        if self._client is not None:
+            client = self._client
+            self._client = None
+            await self.hass.async_add_executor_job(client.close)
+
         creds = self._credentials
         effective_url = self._effective_url(creds)
         bank_label = next(

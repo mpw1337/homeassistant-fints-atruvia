@@ -11,7 +11,7 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 
-from .storage import FintsCredentialStore, FintsStateStore
+from .storage import CredentialStoreError, FintsCredentialStore, FintsStateStore
 
 DOMAIN = "fints_atruvia"
 PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BUTTON]
@@ -45,6 +45,11 @@ _LOGGER = logging.getLogger(__name__)
 # matched by a shorter suffix.
 _SENSOR_SUFFIXES = ("_income_30d", "_expense_30d")
 
+# Config-entry version that moved credentials into the encrypted store. Named
+# so ruff's magic-value-comparison rule (which exempts bare 0/1 but not other
+# small ints) doesn't flag the version check in async_migrate_entry below.
+_CONFIG_ENTRY_VERSION_ENCRYPTED_CREDENTIALS = 2
+
 
 def iban_unique_id(entry_id: str, iban: str) -> str:
     """Return a stable, IBAN-free identifier for sensor unique_ids.
@@ -59,6 +64,19 @@ def iban_unique_id(entry_id: str, iban: str) -> str:
     shipped may still contain the plaintext IBAN under ``previous_unique_id``.
     """
     return hashlib.sha256(f"{entry_id}|{iban}".encode("utf-8")).hexdigest()[:16]
+
+
+def _entry_unique_id(blz: str, username: str) -> str:
+    """
+    Return an identifier that dedupes entries without storing the login.
+
+    ``unique_id`` lands in ``.storage/core.config_entries`` and is served over
+    the config-entries WebSocket API, so the bank login must not appear in it.
+    Unsalted on purpose: ``_abort_if_unique_id_configured`` has to recognise a
+    re-added bank/login pair across flows. Shared between ``config_flow.py``
+    (new entries) and the v2->v3 migration below (existing entries).
+    """
+    return hashlib.sha256(f"{blz}|{username}".encode()).hexdigest()[:16]
 
 
 async def _async_migrate_unique_ids(
@@ -181,10 +199,16 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     v1 (legacy): username and password lived in ``entry.data`` as cleartext.
     v2:          credentials moved to an encrypted store, ``entry.data``
                  keeps only a ``credential_id`` reference.
+    v3:          ``unique_id`` is a hash of blz+username (``_entry_unique_id``)
+                 instead of the cleartext ``"{blz}_{username}"`` — that string
+                 lands in ``.storage/core.config_entries`` and is served over
+                 the config-entries WebSocket API.
 
     Idempotent: if a credential_id already exists (partial v1→v2 retry), we
     reuse it instead of orphaning the previously encrypted blob. We also
     verify after the update that no plaintext password leaked through.
+    ``async_update_entry`` mutates ``entry`` in place, so a v1 entry falls
+    through both branches below and ends up on v3 in a single call.
     """
     if entry.version == 1:
         legacy = entry.data
@@ -229,4 +253,43 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "delete or re-encrypt them.",
             entry.entry_id,
         )
+
+    if entry.version == _CONFIG_ENTRY_VERSION_ENCRYPTED_CREDENTIALS:
+        credential_id = entry.data.get(CONF_CREDENTIAL_ID)
+        new_unique_id: str | None = None
+        if credential_id:
+            try:
+                creds = await FintsCredentialStore(hass, credential_id).load()
+            except CredentialStoreError as exc:
+                _LOGGER.warning(
+                    "Entry %s: could not recompute unique_id during v2->v3 "
+                    "migration (credentials undecryptable — lost master key?): "
+                    "%s. Keeping the legacy unique_id.",
+                    entry.entry_id,
+                    type(exc).__name__,
+                )
+            else:
+                new_unique_id = _entry_unique_id(
+                    entry.data.get(CONF_BLZ, ""), creds["username"]
+                )
+
+        if new_unique_id is None:
+            # Credentials unreadable, or none stored. Bump the version only —
+            # the legacy unique_id was already at rest unencrypted in
+            # core.config_entries before this migration, so leaving it in
+            # place is not a new exposure. Must not block setup.
+            hass.config_entries.async_update_entry(entry, version=3)
+        else:
+            try:
+                hass.config_entries.async_update_entry(
+                    entry, unique_id=new_unique_id, version=3
+                )
+            except Exception as exc:  # noqa: BLE001 - defensive: duplicate hash
+                _LOGGER.warning(
+                    "Entry %s: could not set the new unique_id during v2->v3 "
+                    "migration (likely a genuine blz/login duplicate): %s",
+                    entry.entry_id,
+                    type(exc).__name__,
+                )
+                hass.config_entries.async_update_entry(entry, version=3)
     return True
