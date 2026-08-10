@@ -7,12 +7,40 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+// `tx.date` is the ISO string api.py emits; fall back the same way
+// `_formatDate` does. Returns NaN when nothing parsable is present so callers
+// can push those entries to the end instead of sorting them arbitrarily.
+function _transactionSortKey(tx) {
+  const raw = tx && (tx.date || tx.booking_date || tx.booking_datetime);
+  if (!raw) return NaN;
+  const timestamp = new Date(raw).getTime();
+  return isNaN(timestamp) ? NaN : timestamp;
+}
+
+// Pure helper (no DOM) so it can be exercised without instantiating the
+// custom element. Returns a new array, newest first; entries without a
+// parsable date are moved to the end, both groups keeping their relative
+// (bank/chronological) order — the input array is never mutated.
+function sortTransactionsDescending(transactions) {
+  return transactions
+    .map((tx, index) => ({ tx, index, key: _transactionSortKey(tx) }))
+    .sort((a, b) => {
+      const aValid = !isNaN(a.key);
+      const bValid = !isNaN(b.key);
+      if (aValid && bValid) return b.key - a.key || a.index - b.index;
+      if (aValid !== bValid) return aValid ? -1 : 1;
+      return a.index - b.index;
+    })
+    .map((entry) => entry.tx);
+}
+
 class FintsAtruviaCard extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
     this._config = {};
     this._hass = null;
+    this._lastHtml = null;
   }
 
   setConfig(config) {
@@ -20,6 +48,9 @@ class FintsAtruviaCard extends HTMLElement {
       throw new Error("Please define 'entity' or 'entities' in the card config");
     }
     this._config = config;
+    // A config change may render different markup for the same hass state
+    // (e.g. a new `title:`) — force the cache guard in _render() to miss.
+    this._lastHtml = null;
     this._render();
   }
 
@@ -80,7 +111,7 @@ class FintsAtruviaCard extends HTMLElement {
     return str.length > maxLen ? str.slice(0, maxLen) + "…" : str;
   }
 
-  _renderEntity(entityId) {
+  _renderEntity(entityId, isFirst) {
     if (!this._hass) return "";
 
     const stateObj = this._hass.states[entityId];
@@ -146,7 +177,9 @@ class FintsAtruviaCard extends HTMLElement {
     // recent activity.
     const transactionsAvailable = Array.isArray(attr.transactions);
     const transactions = transactionsAvailable ? attr.transactions : [];
-    const lastFive = transactions.slice(0, 5);
+    // sensor.py delivers `transactions[-10:]` in chronologically ascending
+    // bank order — sort a copy newest-first before taking the top five.
+    const lastFive = sortTransactionsDescending(transactions).slice(0, 5);
 
     const transactionRows = lastFive
       .map((tx, i) => {
@@ -185,8 +218,15 @@ class FintsAtruviaCard extends HTMLElement {
       transactionsSection = `<p class="no-transactions">Keine Transaktionen verfügbar</p>`;
     }
 
+    // Only the first card in a multi-entity `entities:` config gets the
+    // user-configured title — otherwise every card would share one header.
+    const headerText =
+      isFirst && this._config.title
+        ? escapeHtml(this._config.title)
+        : `Konto ${escapeHtml(last4)}`;
+
     return `
-      <ha-card header="Konto ${escapeHtml(last4)}">
+      <ha-card header="${headerText}">
         <div class="card-content">
           <div class="account-name">${escapeHtml(accountName)}</div>
           <div class="${balanceClass}">${balanceFormatted}</div>
@@ -202,9 +242,11 @@ class FintsAtruviaCard extends HTMLElement {
     if (!this._config || !this._hass) return;
 
     const entityIds = this._getEntityIds();
-    const cards = entityIds.map((id) => this._renderEntity(id)).join("\n");
+    const cards = entityIds
+      .map((id, index) => this._renderEntity(id, index === 0))
+      .join("\n");
 
-    this.shadowRoot.innerHTML = `
+    const html = `
       <style>
         :host {
           display: block;
@@ -340,6 +382,14 @@ class FintsAtruviaCard extends HTMLElement {
       </style>
       ${cards}
     `;
+
+    // hass is set on every state change in the whole system, not just ours;
+    // re-writing shadowRoot.innerHTML unconditionally would collapse an
+    // expanded <details> transactions list on unrelated updates. Skipping
+    // when the markup is byte-identical is lossless.
+    if (html === this._lastHtml) return;
+    this._lastHtml = html;
+    this.shadowRoot.innerHTML = html;
   }
 }
 
