@@ -2,6 +2,13 @@
 
 target-version = "py314"
 
+# .claude/: the verify harness is throwaway test scaffolding driven by a skill,
+# not shipped code, and is deliberately not held to `select = ALL`.
+# *.md: ruff formats fenced python blocks in markdown, and the snippets in
+# docs/ are illustrative fragments, not standalone modules - it rewrote a bare
+# `label=f"..."` kwarg into a tuple assignment. Prose is not ruff's to format.
+extend-exclude = [".claude", "*.md"]
+
 [lint]
 select = [
     "ALL",
@@ -13,6 +20,29 @@ ignore = [
     "D212", # multi-line-summary-first-line (incompatible with formatter)
     "COM812", # incompatible with formatter
     "ISC001", # incompatible with formatter
+    "CPY001", # per-file copyright header; the project ships a single LICENSE file
+]
+
+# Resolves the D212-vs-D213 contradiction structurally: ignoring D212 alone
+# activates its counter-rule D213. Same setting Home Assistant core uses.
+[lint.pydocstyle]
+convention = "pep257"
+
+# Standard pytest patterns. `assert` is the point of a test, fixtures and test
+# functions do not need the annotation/docstring rigour of shipped code, and
+# reaching into private members is how white-box regression tests are written.
+[lint.per-file-ignores]
+"tests/**" = [
+    "S101", # assert is pytest's assertion mechanism
+    "ANN", # test functions and fixtures need no type annotations
+    "D103", # undocumented test function - the name is the documentation
+    "D102", # undocumented method on a test double
+    "D401", # non-imperative mood in test docstrings
+    "SLF001", # white-box tests deliberately touch private members
+    "PLR2004", # magic values are the expected values under test
+    "FBT001", # boolean positional args in test stubs mirror the real signature
+    "PT022", # fixtures that yield without teardown are fine
+    "INP001", # tests/ is a package for pytest, not an importable namespace
 ]
 
 [lint.flake8-pytest-style]
