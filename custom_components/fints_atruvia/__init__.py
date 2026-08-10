@@ -5,6 +5,7 @@ import hashlib
 import logging
 import uuid
 
+import attr
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
@@ -49,10 +50,13 @@ def iban_unique_id(entry_id: str, iban: str) -> str:
     """Return a stable, IBAN-free identifier for sensor unique_ids.
 
     Banking IBANs landed in ``.storage/core.entity_registry`` under the old
-    naming scheme. We hash them with the entry_id as salt so the registry —
-    which the HA REST API exposes — no longer contains plaintext account
-    numbers. 16 hex chars (~64 bits) is plenty for collision resistance
-    inside a single entry.
+    naming scheme. We hash them with the entry_id as salt so that, after
+    ``_async_migrate_unique_ids`` runs, the registry contains the plaintext
+    IBAN in neither ``unique_id`` nor ``previous_unique_id`` — the latter is
+    also cleared post-migration, since HA's entity registry otherwise records
+    the pre-migration value there. 16 hex chars (~64 bits) is plenty for
+    collision resistance inside a single entry. Backups taken before this fix
+    shipped may still contain the plaintext IBAN under ``previous_unique_id``.
     """
     return hashlib.sha256(f"{entry_id}|{iban}".encode("utf-8")).hexdigest()[:16]
 
@@ -90,6 +94,49 @@ async def _async_migrate_unique_ids(
         return {"new_unique_id": new_uid}
 
     await er.async_migrate_entries(hass, entry_id, _migrate)
+    _async_clear_previous_unique_ids(hass, entry_id)
+
+
+def _async_clear_previous_unique_ids(hass: HomeAssistant, entry_id: str) -> None:
+    """
+    Scrub the pre-migration IBAN that HA stashes in previous_unique_id.
+
+    ``er.async_migrate_entries`` (via ``EntityRegistry._async_update_entity``)
+    unconditionally sets ``new_values["previous_unique_id"] = old.unique_id``,
+    so the legacy plaintext-IBAN unique_id survives on disk even after the
+    rehash above. There is no public API to suppress or clear that field —
+    ``async_update_entity`` doesn't accept it, since HA derives it internally.
+    Best effort: this must never abort entry setup.
+    """
+    try:
+        registry = er.async_get(hass)
+        changed = False
+        for reg_entry in list(
+            registry.entities.get_entries_for_config_entry_id(entry_id)
+        ):
+            if reg_entry.previous_unique_id is None:
+                continue
+            # No public API clears previous_unique_id; HA derives it inside
+            # _async_update_entity. Writing through the items container
+            # keeps the registry indexes consistent
+            # (BaseRegistryItems.__setitem__ re-indexes).
+            registry.entities[reg_entry.entity_id] = attr.evolve(
+                reg_entry, previous_unique_id=None
+            )
+            changed = True
+        if changed:
+            registry.async_schedule_save()
+    except Exception as exc:  # noqa: BLE001 - defensive, must not break setup
+        _LOGGER.debug(
+            "Could not clear previous_unique_id for entry %s: %s",
+            entry_id,
+            type(exc).__name__,
+        )
+
+
+async def _async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Reload the entry so option changes take effect immediately."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -105,6 +152,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await coordinator.async_config_entry_first_refresh()
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
     return True
 
 
