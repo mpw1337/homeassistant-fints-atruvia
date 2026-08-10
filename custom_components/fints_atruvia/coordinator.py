@@ -92,10 +92,10 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
         super().__init__(
             hass,
             logger=_LOGGER,
+            config_entry=config_entry,
             name=DOMAIN,
             update_interval=timedelta(hours=6),
         )
-        self.config_entry = config_entry
         data = config_entry.data
         credential_id = data.get(CONF_CREDENTIAL_ID)
         if not credential_id:
@@ -169,7 +169,12 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
             ) from exc
 
     async def async_shutdown(self) -> None:
-        """Wipe the in-memory PIN. Called from async_unload_entry."""
+        """
+        Cancel scheduled refreshes, then wipe the in-memory PIN.
+
+        Called from async_unload_entry.
+        """
+        await super().async_shutdown()
         self._pin = None
         if self._client is not None:
             self._client.close()
@@ -199,11 +204,15 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
 
     def _detect_new_transactions(
         self, iban: str, transactions: list[dict]
-    ) -> list[dict]:
+    ) -> tuple[list[dict], set[str]]:
         """Compare current transactions against last seen and return event payloads.
 
-        Also resets the per-IBAN seen-hashes set to the current snapshot so
-        hashes that fall out of the 30-day window are pruned.
+        Also returns the current snapshot of hashes for *iban* so callers can
+        commit it to ``self._seen_hashes`` once the whole update has
+        succeeded — hashes that fall out of the 30-day window are pruned at
+        that point. This method itself does not mutate ``self._seen_hashes``,
+        so a later account failing mid-update cannot cause events detected
+        here to be silently dropped on the next poll.
         """
         current_by_hash: dict[str, dict] = {
             _transaction_hash(t): t for t in transactions
@@ -220,9 +229,7 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
             # First ever run: seed without firing any events.
             events = []
 
-        # Snapshot the seen-hashes set to current visibility window.
-        self._seen_hashes[iban] = set(current_by_hash.keys())
-        return events
+        return events, set(current_by_hash.keys())
 
     @property
     def expose_full_data(self) -> bool:
@@ -257,6 +264,7 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
         """Fetch data for all selected accounts, compute stats, emit events."""
         result: dict = {}
         new_events: list[dict] = []
+        pending_seen: dict[str, set[str]] = {}
         if self._client is None:
             raise ConfigEntryAuthFailed("FinTS client not initialised")
 
@@ -278,7 +286,11 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
                 )
 
                 stats = _compute_stats(transactions)
-                new_events.extend(self._detect_new_transactions(iban, transactions))
+                events, seen_snapshot = self._detect_new_transactions(
+                    iban, transactions
+                )
+                new_events.extend(events)
+                pending_seen[iban] = seen_snapshot
 
                 result[iban] = {
                     "iban": iban,
@@ -304,7 +316,7 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
                 notification_id="fints_atruvia_reauth",
             )
             if self.data is None:
-                raise ConfigEntryAuthFailed("Bank requires initial authentication (TAN)") from e.response
+                raise ConfigEntryAuthFailed("Bank requires initial authentication (TAN)") from e
             # Intentionally return last known complete data rather than partial result.
             # Fresh data for already-processed IBANs is discarded to avoid partial state.
             return self.data
@@ -322,11 +334,17 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
         # Update succeeded for all accounts: mark seen-set as initialised, fire
         # events, and persist. Persistence happens after firing so the receiving
         # automations have observed the events when state is checkpointed.
+        # ``pending_seen`` is only merged into ``self._seen_hashes`` here, once
+        # every account in this update round has succeeded — an earlier
+        # failure (TanRequiredError / UpdateFailed) must not advance the
+        # seen-set for accounts that were already processed, or their events
+        # would be lost forever on the next poll.
         was_uninitialised = not self._seen_initialised
         self._seen_initialised = True
         if not was_uninitialised:
             for payload in new_events:
                 self.hass.bus.async_fire(EVENT_NEW_TRANSACTION, payload)
+        self._seen_hashes.update(pending_seen)
         await self._async_save_seen()
 
         # Persist updated FinTS state (system_id, BPD/UPD) so future dialogs
