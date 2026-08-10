@@ -64,7 +64,15 @@ def _master_store(hass: HomeAssistant) -> Store:
     return Store(hass, _MASTER_KEY_VERSION, _MASTER_KEY_STORAGE, private=True)
 
 
-async def _get_or_create_master_key(hass: HomeAssistant) -> bytes:
+async def async_get_master_key(hass: HomeAssistant) -> bytes:
+    """
+    Return this install's master Fernet key, generating it on first use.
+
+    Besides Fernet encryption of the credential and FinTS-state blobs, the key
+    doubles as the HMAC key behind the config entry's ``unique_id`` (see
+    ``_entry_unique_id`` in ``__init__.py``), so callers outside this module
+    need it too. Every keyed use must apply its own domain-separation prefix.
+    """
     # HA's Store serialises async_load/async_save through an internal lock,
     # so concurrent first-time setups of two entries cannot generate two
     # different master keys here.
@@ -93,7 +101,7 @@ class FintsCredentialStore:
 
     async def save(self, username: str, pin: str) -> None:
         """Encrypt and persist the given credentials."""
-        key = await _get_or_create_master_key(self._hass)
+        key = await async_get_master_key(self._hass)
         fernet = Fernet(key)
         payload = json.dumps({"username": username, "pin": pin}).encode("utf-8")
         ciphertext = fernet.encrypt(payload).decode("ascii")
@@ -164,7 +172,7 @@ class FintsStateStore:
             return None
 
         if "ciphertext" in data:
-            key = await _get_or_create_master_key(self._hass)
+            key = await async_get_master_key(self._hass)
             try:
                 return Fernet(key).decrypt(data["ciphertext"].encode("ascii"))
             except (InvalidToken, ValueError):
@@ -186,7 +194,7 @@ class FintsStateStore:
         if blob is None:
             await self._store.async_remove()
             return
-        key = await _get_or_create_master_key(self._hass)
+        key = await async_get_master_key(self._hass)
         ciphertext = Fernet(key).encrypt(blob).decode("ascii")
         await self._store.async_save({"ciphertext": ciphertext})
 

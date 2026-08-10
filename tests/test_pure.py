@@ -1,9 +1,12 @@
 """Tests for pure (hass-free) helpers — security-relevant behaviour."""
 from __future__ import annotations
 
+import hashlib
+import hmac
 from decimal import Decimal
 
 import pytest
+from cryptography.fernet import Fernet
 from fints.models import SEPAAccount
 
 from custom_components.fints_atruvia import _entry_unique_id, iban_unique_id
@@ -87,8 +90,12 @@ def test_iban_unique_id_differs_across_ibans():
     assert a != b
 
 
+_MASTER_KEY = Fernet.generate_key()
+_OTHER_KEY = Fernet.generate_key()
+
+
 def test_entry_unique_id_does_not_leak_login_or_blz():
-    uid = _entry_unique_id("12345678", "netkey1")
+    uid = _entry_unique_id(_MASTER_KEY, "12345678", "netkey1")
     assert "netkey1" not in uid
     assert "12345678" not in uid
     assert len(uid) == 16
@@ -96,21 +103,42 @@ def test_entry_unique_id_does_not_leak_login_or_blz():
 
 
 def test_entry_unique_id_is_stable():
-    a = _entry_unique_id("12345678", "netkey1")
-    b = _entry_unique_id("12345678", "netkey1")
+    a = _entry_unique_id(_MASTER_KEY, "12345678", "netkey1")
+    b = _entry_unique_id(_MASTER_KEY, "12345678", "netkey1")
     assert a == b
 
 
 def test_entry_unique_id_differs_across_usernames():
-    assert _entry_unique_id("12345678", "netkey1") != _entry_unique_id(
-        "12345678", "netkey2"
+    assert _entry_unique_id(_MASTER_KEY, "12345678", "netkey1") != _entry_unique_id(
+        _MASTER_KEY, "12345678", "netkey2"
     )
 
 
 def test_entry_unique_id_differs_across_blz():
-    assert _entry_unique_id("12345678", "netkey1") != _entry_unique_id(
-        "87654321", "netkey1"
+    assert _entry_unique_id(_MASTER_KEY, "12345678", "netkey1") != _entry_unique_id(
+        _MASTER_KEY, "87654321", "netkey1"
     )
+
+
+def test_entry_unique_id_differs_across_keys():
+    """The property that defeats offline brute force: blz+login is not enough.
+
+    Without the install's master key, an attacker holding
+    ``core.config_entries`` (which carries the cleartext blz) cannot confirm a
+    guessed NetKey login against the stored unique_id.
+    """
+    assert _entry_unique_id(_MASTER_KEY, "12345678", "netkey1") != _entry_unique_id(
+        _OTHER_KEY, "12345678", "netkey1"
+    )
+
+
+def test_entry_unique_id_is_hmac_of_domain_separated_message():
+    expected = hmac.new(
+        _MASTER_KEY,
+        b"entry_unique_id|12345678|netkey1",
+        hashlib.sha256,
+    ).hexdigest()[:16]
+    assert _entry_unique_id(_MASTER_KEY, "12345678", "netkey1") == expected
 
 
 # ---------------------------------------------------------------------------

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import logging
 import uuid
 
@@ -11,7 +12,12 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 
-from .storage import CredentialStoreError, FintsCredentialStore, FintsStateStore
+from .storage import (
+    CredentialStoreError,
+    FintsCredentialStore,
+    FintsStateStore,
+    async_get_master_key,
+)
 
 DOMAIN = "fints_atruvia"
 PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BUTTON]
@@ -66,17 +72,32 @@ def iban_unique_id(entry_id: str, iban: str) -> str:
     return hashlib.sha256(f"{entry_id}|{iban}".encode("utf-8")).hexdigest()[:16]
 
 
-def _entry_unique_id(blz: str, username: str) -> str:
+def _entry_unique_id(key: bytes, blz: str, username: str) -> str:
     """
     Return an identifier that dedupes entries without storing the login.
 
     ``unique_id`` lands in ``.storage/core.config_entries`` and is served over
-    the config-entries WebSocket API, so the bank login must not appear in it.
-    Unsalted on purpose: ``_abort_if_unique_id_configured`` has to recognise a
-    re-added bank/login pair across flows. Shared between ``config_flow.py``
-    (new entries) and the v2->v3 migration below (existing entries).
+    the config-entries WebSocket API, so the bank login must not appear in it —
+    not even in a form that can be recovered. A plain digest would not be
+    enough: the BLZ sits in cleartext in ``entry.data`` in that same file and
+    NetKey logins are short numeric customer IDs, so an unkeyed hash of
+    blz+login is brute-forceable offline in minutes by anyone who reads the
+    file. Hence HMAC-SHA256 under *key* — the install's master Fernet key from
+    :func:`.storage.async_get_master_key`, which never leaves ``.storage`` and
+    is not part of the exposed entry data.
+
+    ``entry_unique_id|`` is a domain-separation prefix so this keyed use of the
+    master key cannot interact with any other one added later.
+
+    Stable within one install because the master key is persistent, which is
+    all ``_abort_if_unique_id_configured`` needs. Both callers — ``config_flow``
+    for new entries and the v2->v3 migration below for existing ones — run with
+    ``hass`` available and can therefore fetch the key. If the key is ever lost,
+    the value is not reproducible; the migration handles that by keeping the
+    legacy unique_id instead of failing.
     """
-    return hashlib.sha256(f"{blz}|{username}".encode()).hexdigest()[:16]
+    message = b"entry_unique_id|" + f"{blz}|{username}".encode()
+    return hmac.new(key, message, hashlib.sha256).hexdigest()[:16]
 
 
 async def _async_migrate_unique_ids(
@@ -199,10 +220,11 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     v1 (legacy): username and password lived in ``entry.data`` as cleartext.
     v2:          credentials moved to an encrypted store, ``entry.data``
                  keeps only a ``credential_id`` reference.
-    v3:          ``unique_id`` is a hash of blz+username (``_entry_unique_id``)
-                 instead of the cleartext ``"{blz}_{username}"`` — that string
-                 lands in ``.storage/core.config_entries`` and is served over
-                 the config-entries WebSocket API.
+    v3:          ``unique_id`` is a keyed HMAC over blz+username
+                 (``_entry_unique_id``) instead of the cleartext
+                 ``"{blz}_{username}"`` — that string lands in
+                 ``.storage/core.config_entries`` and is served over the
+                 config-entries WebSocket API.
 
     Idempotent: if a credential_id already exists (partial v1→v2 retry), we
     reuse it instead of orphaning the previously encrypted blob. We also
@@ -260,6 +282,9 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if credential_id:
             try:
                 creds = await FintsCredentialStore(hass, credential_id).load()
+                # Decrypting the credentials above already required the master
+                # key, so reading it here introduces no new failure mode.
+                key = await async_get_master_key(hass)
             except CredentialStoreError as exc:
                 _LOGGER.warning(
                     "Entry %s: could not recompute unique_id during v2->v3 "
@@ -268,9 +293,16 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     entry.entry_id,
                     type(exc).__name__,
                 )
+            except Exception as exc:  # noqa: BLE001 - must never block setup
+                _LOGGER.warning(
+                    "Entry %s: could not recompute unique_id during v2->v3 "
+                    "migration: %s. Keeping the legacy unique_id.",
+                    entry.entry_id,
+                    type(exc).__name__,
+                )
             else:
                 new_unique_id = _entry_unique_id(
-                    entry.data.get(CONF_BLZ, ""), creds["username"]
+                    key, entry.data.get(CONF_BLZ, ""), creds["username"]
                 )
 
         if new_unique_id is None:

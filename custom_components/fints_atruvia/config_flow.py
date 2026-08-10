@@ -29,7 +29,11 @@ from . import (
     _entry_unique_id,
 )
 from .api import FinTsAtruviaClient, InvalidUrlError, SEPAAccount
-from .storage import CredentialStoreError, FintsCredentialStore
+from .storage import (
+    CredentialStoreError,
+    FintsCredentialStore,
+    async_get_master_key,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -192,8 +196,11 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
 
             if not errors:
                 self._credentials = user_input
+                # First-ever flow: this creates the master key. Intentional —
+                # the credential save at the end of the flow reuses it.
+                key = await async_get_master_key(self.hass)
                 await self.async_set_unique_id(
-                    _entry_unique_id(user_input["blz"], user_input["username"])
+                    _entry_unique_id(key, user_input["blz"], user_input["username"])
                 )
                 self._abort_if_unique_id_configured()
                 return await self.async_step_sync()

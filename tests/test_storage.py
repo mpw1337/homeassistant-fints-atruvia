@@ -8,7 +8,7 @@ from custom_components.fints_atruvia.storage import (
     CredentialStoreError,
     FintsCredentialStore,
     FintsStateStore,
-    _get_or_create_master_key,
+    async_get_master_key,
 )
 
 
@@ -103,8 +103,8 @@ async def test_state_store_remove_when_none(hass):
 
 
 async def test_master_key_is_persistent(hass):
-    key1 = await _get_or_create_master_key(hass)
-    key2 = await _get_or_create_master_key(hass)
+    key1 = await async_get_master_key(hass)
+    key2 = await async_get_master_key(hass)
     assert key1 == key2
     # Sanity: should be a valid Fernet key.
     Fernet(key1)

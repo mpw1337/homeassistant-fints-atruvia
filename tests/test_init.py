@@ -22,7 +22,10 @@ from custom_components.fints_atruvia import (
     async_migrate_entry,
     iban_unique_id,
 )
-from custom_components.fints_atruvia.storage import FintsCredentialStore
+from custom_components.fints_atruvia.storage import (
+    FintsCredentialStore,
+    async_get_master_key,
+)
 
 _IBAN = "DE89370400440532013000"
 
@@ -136,7 +139,8 @@ async def test_migrate_entry_v1_to_v3_chains_both_steps(hass):
 
     assert result is True
     assert entry.version == 3
-    assert entry.unique_id == _entry_unique_id("12345678", "netkey1")
+    key = await async_get_master_key(hass)
+    assert entry.unique_id == _entry_unique_id(key, "12345678", "netkey1")
     assert "password" not in entry.data
     assert "username" not in entry.data
     credential_id = entry.data[CONF_CREDENTIAL_ID]
@@ -166,7 +170,8 @@ async def test_migrate_entry_v2_to_v3_hashes_unique_id(hass):
 
     assert result is True
     assert entry.version == 3
-    assert entry.unique_id == _entry_unique_id("12345678", "netkey1")
+    key = await async_get_master_key(hass)
+    assert entry.unique_id == _entry_unique_id(key, "12345678", "netkey1")
     assert "netkey1" not in entry.unique_id
     assert "12345678" not in entry.unique_id
 
