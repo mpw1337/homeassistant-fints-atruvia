@@ -10,9 +10,9 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 from homeassistant.components.lovelace.const import LOVELACE_DATA
 from homeassistant.components.lovelace.resources import (
     ResourceStorageCollection,
@@ -27,6 +27,9 @@ from custom_components.fints_atruvia.frontend import (
     _card_path,
     async_register_card,
 )
+
+if TYPE_CHECKING:
+    import pytest
 
 _VERSION = "0.4.0"
 _EXPECTED_URL = f"{CARD_URL_PATH}?v={_VERSION}"

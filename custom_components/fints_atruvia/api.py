@@ -18,20 +18,28 @@ from __future__ import annotations
 
 import datetime
 import logging
-from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fints.client import FinTS3PinTanClient, NeedTANResponse
-from fints.models import SEPAAccount
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from fints.models import SEPAAccount
 
 _LOGGER = logging.getLogger(__name__)
+
+_MSG_INSECURE_URL = (
+    "FinTS endpoint URL must use https://. Plain http would leak the PIN in transit."
+)
 
 
 class TanRequiredError(Exception):
     """Raised when the bank returns a NeedTANResponse instead of data."""
 
     def __init__(self, response: NeedTANResponse) -> None:
+        """Wrap the bank's TAN challenge so callers can complete it later."""
         super().__init__("Bank requires TAN authentication")
         self.response = response
 
@@ -115,7 +123,7 @@ class _ExtendedFinTSClient(FinTS3PinTanClient):
     the extended fields the bank delivers.
     """
 
-    def _get_balance(self, command_seg, response):  # type: ignore[override]
+    def _get_balance(self, command_seg: Any, response: Any) -> Any:  # type: ignore[override]
         for resp in response.response_segments(command_seg, "HISAL"):
             return resp
         return None
@@ -141,7 +149,7 @@ class FinTsAtruviaClient:
       system_id') and needs special handling.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913, PLR0917 - one parameter per FinTS connection field
         self,
         blz: str,
         login: str,
@@ -150,11 +158,9 @@ class FinTsAtruviaClient:
         product_id: str | None = None,
         fints_state: bytes | None = None,
     ) -> None:
+        """Store the connection parameters; no bank dialog is opened yet."""
         if not url.lower().startswith("https://"):
-            raise InvalidUrlError(
-                "FinTS endpoint URL must use https://. Plain http would "
-                "leak the PIN in transit."
-            )
+            raise InvalidUrlError(_MSG_INSECURE_URL)
         self._blz = blz
         self._login = login
         # Lazy callable rather than a stored string: lets the coordinator
@@ -287,7 +293,10 @@ class FinTsAtruviaClient:
 
     def _close_standing_dialog(self) -> None:
         """Close the client's standing dialog if one is open."""
-        if self._client is None or self._client._standing_dialog is None:
+        # python-fints exposes no public accessor for the standing dialog;
+        # reading the private attribute is the only way to tell whether
+        # __exit__ has anything to close.
+        if self._client is None or self._client._standing_dialog is None:  # noqa: SLF001
             return
         try:
             self._client.__exit__(None, None, None)
@@ -335,22 +344,26 @@ class FinTsAtruviaClient:
 
             * ``balance`` (Decimal): signed booked balance
             * ``currency`` (str): ISO 4217 currency code
-            * ``available_balance`` (Decimal | None): available amount incl. dispo
-            * ``balance_pending`` (Decimal | None): signed balance incl. pending bookings
-            * ``pending_amount`` (Decimal | None): difference (balance_pending - balance)
-            * ``booking_date`` (datetime.date | None): booking date of the balance
+            * ``available_balance`` (Decimal | None): available amount incl.
+              dispo
+            * ``balance_pending`` (Decimal | None): signed balance incl.
+              pending bookings
+            * ``pending_amount`` (Decimal | None): difference
+              (balance_pending - balance)
+            * ``booking_date`` (datetime.date | None): booking date of the
+              balance
         """
         segment = self._get_client().get_balance(account)
         if isinstance(segment, NeedTANResponse):
             raise TanRequiredError(segment)
         if segment is None:
-            raise ValueError(f"No balance data returned for account {account.iban}")
+            msg = f"No balance data returned for account {account.iban}"
+            raise ValueError(msg)
 
         balance = _balance_to_signed_decimal(getattr(segment, "balance_booked", None))
         if balance is None:
-            raise ValueError(
-                f"No booked balance in HISAL response for account {account.iban}"
-            )
+            msg = f"No booked balance in HISAL response for account {account.iban}"
+            raise ValueError(msg)
 
         balance_pending = _balance_to_signed_decimal(
             getattr(segment, "balance_pending", None)
@@ -386,6 +399,12 @@ class FinTsAtruviaClient:
     def get_transactions(self, account: SEPAAccount, days: int = 30) -> list[dict]:
         """Fetch recent transactions for a single account.
 
+        The window is *days* calendar days counted back from today in the
+        host's local timezone, which for a self-hosted Home Assistant is also
+        the bank's — this module deliberately imports nothing from
+        ``homeassistant`` (see the module docstring), so it cannot consult
+        HA's configured timezone.
+
         :param account: SEPAAccount as returned by get_accounts().
         :param days: Number of calendar days to look back (default 30).
         :returns: List of dicts with keys:
@@ -395,7 +414,10 @@ class FinTsAtruviaClient:
                   - purpose (str): payment purpose / reference text
                   - creditor (str): counterpart name (may be empty string)
         """
-        end_date = datetime.date.today()
+        # Local calendar date on purpose, see the docstring: a timezone-aware
+        # "today" would require homeassistant.util.dt and break the layering
+        # that keeps this blocking wrapper independently testable.
+        end_date = datetime.date.today()  # noqa: DTZ011
         start_date = end_date - datetime.timedelta(days=days)
 
         raw = self._get_client().get_transactions(

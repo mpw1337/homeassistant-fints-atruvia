@@ -5,7 +5,8 @@ from __future__ import annotations
 import hashlib
 import logging
 from datetime import timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
+from typing import TYPE_CHECKING
 
 from homeassistant.components.persistent_notification import (
     async_create as pn_async_create,
@@ -13,8 +14,6 @@ from homeassistant.components.persistent_notification import (
 from homeassistant.components.persistent_notification import (
     async_dismiss as pn_async_dismiss,
 )
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -37,18 +36,38 @@ from .storage import (
     FintsStateStore,
 )
 
+if TYPE_CHECKING:
+    from homeassistant.config_entries import ConfigEntry
+    from homeassistant.core import HomeAssistant
+
 _LOGGER = logging.getLogger(__name__)
 
 _STORAGE_VERSION = 1
 _STORAGE_KEY_FMT = "fints_atruvia_seen_transactions_{entry_id}"
 
+# An IBAN shorter than country code + last four has nothing left to mask.
+_IBAN_MIN_MASKABLE_LEN = 8
+_IBAN_LAST4_LEN = 4
+
+# Messages for the exceptions raised below. Named constants because ruff's
+# TRY003 wants long texts out of the raise site, and the exception types here
+# come from Home Assistant, so the text cannot move into the class.
+_MSG_NO_CREDENTIAL_ID = "Credential reference missing — please re-authenticate."
+_MSG_CREDENTIALS_UNAVAILABLE = (
+    "Credentials could not be loaded — please re-authenticate."
+)
+_MSG_CLIENT_NOT_INITIALISED = "FinTS client not initialised"
+_MSG_INITIAL_TAN_REQUIRED = "Bank requires initial authentication (TAN)"
+_MSG_UPDATE_FAILED = "Error communicating with bank"
+
 
 def _mask_iban_for_event(iban: str) -> str:
     """Return a masked IBAN suitable for event payloads."""
     clean = iban.replace(" ", "")
-    if len(clean) < 8:
+    if len(clean) < _IBAN_MIN_MASKABLE_LEN:
         return clean
-    return f"{clean[:4]}{'*' * (len(clean) - 8)}{clean[-4:]}"
+    masked = "*" * (len(clean) - _IBAN_MIN_MASKABLE_LEN)
+    return f"{clean[:4]}{masked}{clean[-4:]}"
 
 
 def _transaction_hash(txn: dict) -> str:
@@ -74,7 +93,10 @@ def _compute_stats(transactions: list[dict]) -> dict:
             continue
         try:
             value = Decimal(amount)
-        except Exception:  # noqa: BLE001
+        except InvalidOperation, TypeError, ValueError:
+            # Deliberately not logged: the value in scope is a bank
+            # transaction amount, which is exactly the kind of data this
+            # integration exists to keep out of the log.
             continue
         if value > 0:
             income += value
@@ -88,7 +110,7 @@ def _compute_stats(transactions: list[dict]) -> dict:
 
 
 class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
-    """Coordinator that polls the bank every 6 hours and handles the 90-day re-auth lifecycle."""
+    """Polls the bank every 6 hours and handles the 90-day re-auth lifecycle."""
 
     def __init__(self, hass: HomeAssistant, config_entry: ConfigEntry) -> None:
         """Initialise the coordinator."""
@@ -105,9 +127,7 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
             # Cannot recover automatically: the migration must have failed
             # or the entry was created by an older code path. Raising here
             # surfaces to async_setup_entry and triggers a reauth prompt.
-            raise ConfigEntryAuthFailed(
-                "Credential reference missing — please re-authenticate."
-            )
+            raise ConfigEntryAuthFailed(_MSG_NO_CREDENTIAL_ID)
         self._credential_id: str = credential_id
         self._credential_store = FintsCredentialStore(hass, credential_id)
         self._state_store = FintsStateStore(hass, credential_id)
@@ -142,9 +162,7 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
         try:
             creds = await self._credential_store.load()
         except CredentialStoreError as exc:
-            raise ConfigEntryAuthFailed(
-                "Credentials could not be loaded — please re-authenticate."
-            ) from exc
+            raise ConfigEntryAuthFailed(_MSG_CREDENTIALS_UNAVAILABLE) from exc
 
         # PIN is held in this coordinator instance for the lifetime of the
         # config entry. python-fints captures it internally when the dialog
@@ -167,7 +185,8 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
                 fints_state=fints_state,
             )
         except InvalidUrlError as exc:
-            raise ConfigEntryAuthFailed(f"Bank URL is invalid: {exc}") from exc
+            msg = f"Bank URL is invalid: {exc}"
+            raise ConfigEntryAuthFailed(msg) from exc
 
     async def async_shutdown(self) -> None:
         """
@@ -232,10 +251,11 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
 
     @property
     def expose_full_data(self) -> bool:
-        """Whether bank-controlled transaction texts (purpose, counterparty) are exposed.
+        """Whether bank-controlled transaction texts are exposed.
 
-        Default off — automations only see masked IBAN + amount + date + hash.
-        Toggled via the per-entry Options-Flow.
+        Covers ``purpose`` and the counterparty name. Default off — automations
+        only see masked IBAN + amount + date + hash. Toggled via the per-entry
+        Options-Flow.
         """
         return bool(self.config_entry.options.get(CONF_EXPOSE_FULL_DATA, False))
 
@@ -248,7 +268,7 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
         payload: dict = {
             "integration_id": self.config_entry.entry_id,
             "iban_masked": _mask_iban_for_event(iban),
-            "iban_last4": clean[-4:] if len(clean) >= 4 else clean,
+            "iban_last4": clean[-4:] if len(clean) >= _IBAN_LAST4_LEN else clean,
             "date": txn.get("date"),
             "amount": float(amount) if amount is not None else None,
             "currency": txn.get("currency"),
@@ -265,7 +285,7 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
         new_events: list[dict] = []
         pending_seen: dict[str, set[str]] = {}
         if self._client is None:
-            raise ConfigEntryAuthFailed("FinTS client not initialised")
+            raise ConfigEntryAuthFailed(_MSG_CLIENT_NOT_INITIALISED)
 
         try:
             accounts = await self.hass.async_add_executor_job(self._client.get_accounts)
@@ -313,11 +333,10 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
                 notification_id="fints_atruvia_reauth",
             )
             if self.data is None:
-                raise ConfigEntryAuthFailed(
-                    "Bank requires initial authentication (TAN)"
-                ) from e
-            # Intentionally return last known complete data rather than partial result.
-            # Fresh data for already-processed IBANs is discarded to avoid partial state.
+                raise ConfigEntryAuthFailed(_MSG_INITIAL_TAN_REQUIRED) from e
+            # Intentionally return last known complete data rather than a
+            # partial result. Fresh data for already-processed IBANs is
+            # discarded to avoid partial state.
             return self.data
         except CredentialStoreError as err:
             # Decryption failed — typically because master key file was lost.
@@ -327,8 +346,10 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
             # Bank responses may carry sensitive content in their string
             # form. Log only the exception type; the original exception is
             # still chained via ``raise from`` for debug-level traceback.
-            _LOGGER.error("FinTS update failed: %s", type(err).__name__)
-            raise UpdateFailed("Error communicating with bank") from err
+            _LOGGER.error(  # noqa: TRY400 - log hygiene: no python-fints traceback (SECURITY.md §10)
+                "FinTS update failed: %s", type(err).__name__
+            )
+            raise UpdateFailed(_MSG_UPDATE_FAILED) from err
 
         # Update succeeded for all accounts: mark seen-set as initialised, fire
         # events, and persist. Persistence happens after firing so the receiving

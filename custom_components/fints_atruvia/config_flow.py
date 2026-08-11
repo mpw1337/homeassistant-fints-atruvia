@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 import voluptuous as vol
-from fints.client import NeedTANResponse
 from homeassistant.config_entries import (
     ConfigEntry,
     ConfigFlow,
@@ -28,12 +27,16 @@ from . import (
     DOMAIN,
     _entry_unique_id,
 )
-from .api import FinTsAtruviaClient, InvalidUrlError, SEPAAccount
+from .api import FinTsAtruviaClient, InvalidUrlError
 from .storage import (
     CredentialStoreError,
     FintsCredentialStore,
     async_get_master_key,
 )
+
+if TYPE_CHECKING:
+    from fints.client import NeedTANResponse
+    from fints.models import SEPAAccount
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -72,7 +75,7 @@ STEP_USER_SCHEMA = vol.Schema(
 )
 
 
-def _validate_https_url(url: str) -> str | None:
+def _validate_https_url(url: str) -> str | None:  # noqa: PLR0911 - one early return per rejection reason
     """Return an error code if *url* is not a valid https URL.
 
     Rejects:
@@ -80,7 +83,7 @@ def _validate_https_url(url: str) -> str | None:
     * empty netloc
     * netlocs that cannot be encoded as plain ASCII via IDNA — protects
       against homoglyph / Punycode lookalike domains like ``атруvia.de``.
-    """
+    """  # noqa: RUF002 - the lookalike letters above are the input this rejects
     try:
         parsed = urlparse(url)
     except ValueError:
@@ -216,7 +219,8 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
     # ------------------------------------------------------------------
 
     async def async_step_sync(
-        self, user_input: dict[str, Any] | None = None
+        self,
+        user_input: dict[str, Any] | None = None,  # noqa: ARG002 - HA passes it to every step; this one shows no form
     ) -> ConfigFlowResult:
         """Perform FinTS system-ID handshake — runs automatically, no form shown."""
         if not self._credentials:
@@ -248,7 +252,9 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
             # Log only the exception type. python-fints errors may quote
             # bank-response content (HBCI segments can include account
             # numbers) — keep that out of HA logs.
-            _LOGGER.error("FinTS system-ID init failed: %s", type(exc).__name__)
+            _LOGGER.error(  # noqa: TRY400 - log hygiene: no python-fints traceback (SECURITY.md §10)
+                "FinTS system-ID init failed: %s", type(exc).__name__
+            )
             return self.async_show_form(
                 step_id="user",
                 data_schema=STEP_USER_SCHEMA,
@@ -285,7 +291,9 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
                     "",
                 )
             except Exception as exc:  # noqa: BLE001
-                _LOGGER.error("TAN challenge failed: %s", type(exc).__name__)
+                _LOGGER.error(  # noqa: TRY400 - log hygiene: no python-fints traceback (SECURITY.md §10)
+                    "TAN challenge failed: %s", type(exc).__name__
+                )
                 return self.async_show_form(
                     step_id="2fa",
                     data_schema=vol.Schema({}),
@@ -320,7 +328,9 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
         try:
             accounts = await self.hass.async_add_executor_job(self._client.get_accounts)
         except Exception as exc:  # noqa: BLE001
-            _LOGGER.error("Account fetch failed: %s", type(exc).__name__)
+            _LOGGER.error(  # noqa: TRY400 - log hygiene: no python-fints traceback (SECURITY.md §10)
+                "Account fetch failed: %s", type(exc).__name__
+            )
             return self.async_show_form(
                 step_id="accounts",
                 data_schema=vol.Schema({}),
@@ -440,7 +450,10 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
     # Reauth flow
     # ------------------------------------------------------------------
 
-    async def async_step_reauth(self, entry_data: dict[str, Any]) -> ConfigFlowResult:
+    async def async_step_reauth(
+        self,
+        entry_data: dict[str, Any],  # noqa: ARG002 - HA's signature; the entry comes from the flow context
+    ) -> ConfigFlowResult:
         """Handle reauth triggered by ConfigEntryAuthFailed."""
         self._reauth_entry = self.hass.config_entries.async_get_entry(
             self.context["entry_id"]
@@ -520,11 +533,13 @@ class FintsAtruviaOptionsFlow(OptionsFlow):
     """Per-entry options. Currently exposes the data-disclosure toggle."""
 
     def __init__(self, config_entry: ConfigEntry) -> None:
+        """Remember the entry whose options are being edited."""
         self._entry = config_entry
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
+        """Show the options form, or store the submitted toggle."""
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
 

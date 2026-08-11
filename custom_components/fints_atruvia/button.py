@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from homeassistant.components.button import ButtonEntity
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import DOMAIN
 from .coordinator import FintsBankingCoordinator
+
+if TYPE_CHECKING:
+    from homeassistant.config_entries import ConfigEntry
+    from homeassistant.core import HomeAssistant
+    from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -50,6 +53,5 @@ class FintsReAuthButton(CoordinatorEntity[FintsBankingCoordinator], ButtonEntity
             await self.coordinator.async_complete_reauth()
         except Exception as err:
             _LOGGER.debug("Re-auth completion failed", exc_info=True)
-            raise HomeAssistantError(
-                f"Re-authentication failed ({type(err).__name__})"
-            ) from err
+            msg = f"Re-authentication failed ({type(err).__name__})"
+            raise HomeAssistantError(msg) from err

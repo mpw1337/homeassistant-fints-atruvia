@@ -6,9 +6,9 @@ import hashlib
 import hmac
 import logging
 import uuid
+from typing import TYPE_CHECKING
 
 import attr
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
@@ -19,6 +19,9 @@ from .storage import (
     FintsStateStore,
     async_get_master_key,
 )
+
+if TYPE_CHECKING:
+    from homeassistant.config_entries import ConfigEntry
 
 DOMAIN = "fints_atruvia"
 PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BUTTON]
@@ -56,6 +59,12 @@ _SENSOR_SUFFIXES = ("_income_30d", "_expense_30d")
 # so ruff's magic-value-comparison rule (which exempts bare 0/1 but not other
 # small ints) doesn't flag the version check in async_migrate_entry below.
 _CONFIG_ENTRY_VERSION_ENCRYPTED_CREDENTIALS = 2
+
+# Length of the hashed IBAN portion produced by :func:`iban_unique_id`, and the
+# shortest remainder that can still plausibly be a legacy IBAN (country code +
+# two check digits). Both are only compared against in ``_migrate`` below.
+_IBAN_HASH_LEN = 16
+_IBAN_MIN_LEN = 4
 
 
 def iban_unique_id(entry_id: str, iban: str) -> str:
@@ -122,11 +131,13 @@ async def _async_migrate_unique_ids(hass: HomeAssistant, entry: ConfigEntry) -> 
         if remainder == "reauth_button":
             return None
         # Already migrated (16 lowercase hex chars).
-        if len(remainder) == 16 and all(c in "0123456789abcdef" for c in remainder):
+        if len(remainder) == _IBAN_HASH_LEN and all(
+            c in "0123456789abcdef" for c in remainder
+        ):
             return None
         # Anything else with a country-code-like prefix is treated as a legacy
         # IBAN and rewritten.
-        if len(remainder) < 4 or not remainder[:2].isalpha():
+        if len(remainder) < _IBAN_MIN_LEN or not remainder[:2].isalpha():
             return None
         new_uid = f"{entry_id}_{iban_unique_id(entry_id, remainder)}{suffix}"
         return {"new_unique_id": new_uid}
@@ -179,8 +190,10 @@ async def _async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up fints_atruvia from a config entry."""
-    from .coordinator import FintsBankingCoordinator
-    from .frontend import async_register_card
+    # Imported here on purpose: `coordinator` imports back from this module,
+    # and neither it nor `frontend` is needed until an entry is set up.
+    from .coordinator import FintsBankingCoordinator  # noqa: PLC0415
+    from .frontend import async_register_card  # noqa: PLC0415
 
     await async_register_card(hass)
     await _async_migrate_unique_ids(hass, entry)

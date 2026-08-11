@@ -19,11 +19,13 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from cryptography.fernet import Fernet, InvalidToken
-from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
+
+if TYPE_CHECKING:
+    from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -35,6 +37,15 @@ _CRED_STORAGE_FMT = "fints_atruvia_credentials_{credential_id}"
 
 _FINTS_STATE_VERSION = 2
 _FINTS_STATE_STORAGE_FMT = "fints_atruvia_state_{credential_id}"
+
+# CredentialStoreError messages. Named constants because ruff's TRY003 wants
+# long exception texts out of the raise site, and CredentialStoreError itself
+# carries no per-case logic that would justify a subclass per failure mode.
+_MSG_NO_CREDENTIALS = "No stored credentials for this entry"
+_MSG_MASTER_KEY_MISSING = "Master key missing — cannot decrypt"
+_MSG_UNDECRYPTABLE = "Credentials could not be decrypted"
+_MSG_MALFORMED_BLOB = "Credential blob is malformed"
+_MSG_INCOMPLETE_BLOB = "Credential blob is missing required fields"
 
 
 class CredentialStoreError(Exception):
@@ -90,6 +101,7 @@ class FintsCredentialStore:
     """Persists username/PIN as a Fernet-encrypted blob, keyed by credential_id."""
 
     def __init__(self, hass: HomeAssistant, credential_id: str) -> None:
+        """Bind the store to one entry's encrypted credential file."""
         self._hass = hass
         self._credential_id = credential_id
         self._store = Store(
@@ -111,29 +123,29 @@ class FintsCredentialStore:
         """Return {'username', 'pin'} or raise CredentialStoreError."""
         cred_data = await self._store.async_load()
         if not isinstance(cred_data, dict) or "ciphertext" not in cred_data:
-            raise CredentialStoreError("No stored credentials for this entry")
+            raise CredentialStoreError(_MSG_NO_CREDENTIALS)
 
         master = await _master_store(self._hass).async_load()
         if not isinstance(master, dict) or "key" not in master:
-            raise CredentialStoreError("Master key missing — cannot decrypt")
+            raise CredentialStoreError(_MSG_MASTER_KEY_MISSING)
 
         try:
             fernet = Fernet(master["key"].encode("ascii"))
             plaintext = fernet.decrypt(cred_data["ciphertext"].encode("ascii"))
         except (InvalidToken, ValueError) as exc:
-            raise CredentialStoreError("Credentials could not be decrypted") from exc
+            raise CredentialStoreError(_MSG_UNDECRYPTABLE) from exc
 
         try:
             decoded = json.loads(plaintext.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise CredentialStoreError("Credential blob is malformed") from exc
+            raise CredentialStoreError(_MSG_MALFORMED_BLOB) from exc
 
         if (
             not isinstance(decoded, dict)
             or "username" not in decoded
             or "pin" not in decoded
         ):
-            raise CredentialStoreError("Credential blob is missing required fields")
+            raise CredentialStoreError(_MSG_INCOMPLETE_BLOB)
         return {"username": str(decoded["username"]), "pin": str(decoded["pin"])}
 
     async def remove(self) -> None:
@@ -162,6 +174,7 @@ class FintsStateStore:
     """
 
     def __init__(self, hass: HomeAssistant, credential_id: str) -> None:
+        """Bind the store to one entry's encrypted FinTS-state file."""
         self._hass = hass
         self._store = _MigratingStore(
             hass,
@@ -171,6 +184,7 @@ class FintsStateStore:
         )
 
     async def load(self) -> bytes | None:
+        """Return the stored FinTS state blob, or None if there is none usable."""
         data = await self._store.async_load()
         if not isinstance(data, dict):
             return None
@@ -195,6 +209,7 @@ class FintsStateStore:
         return None
 
     async def save(self, blob: bytes | None) -> None:
+        """Encrypt and persist *blob*, or delete the file when it is None."""
         if blob is None:
             await self._store.async_remove()
             return
@@ -203,6 +218,7 @@ class FintsStateStore:
         await self._store.async_save({"ciphertext": ciphertext})
 
     async def remove(self) -> None:
+        """Delete the FinTS state file for this entry."""
         await self._store.async_remove()
 
 

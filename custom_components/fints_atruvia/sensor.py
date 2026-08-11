@@ -3,20 +3,25 @@
 from __future__ import annotations
 
 import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
     SensorStateClass,
 )
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import DOMAIN, iban_unique_id
 from .coordinator import FintsBankingCoordinator
+
+if TYPE_CHECKING:
+    from homeassistant.config_entries import ConfigEntry
+    from homeassistant.core import HomeAssistant
+    from homeassistant.helpers.entity_platform import AddEntitiesCallback
+
+# An IBAN shorter than country code + last four has nothing left to mask.
+_IBAN_MIN_MASKABLE_LEN = 8
 
 
 def _mask_iban(iban: str) -> str:
@@ -27,7 +32,7 @@ def _mask_iban(iban: str) -> str:
     anyone with state read access. Masking by default keeps the full
     account number out of long-term storage and the event bus.
     """
-    if not iban or len(iban) < 8:
+    if not iban or len(iban) < _IBAN_MIN_MASKABLE_LEN:
         return iban
     clean = iban.replace(" ", "")
     head = clean[:4]
@@ -47,7 +52,7 @@ def _to_float(value: Any) -> float | None:
 
 
 def _date_iso(value: Any) -> str | None:
-    """Return ISO date string for date/datetime, otherwise pass through string or None."""
+    """Return an ISO date string for date/datetime, else the value as str or None."""
     if value is None:
         return None
     if isinstance(value, (datetime.date, datetime.datetime)):
@@ -87,7 +92,7 @@ class FintsBankingSensor(CoordinatorEntity[FintsBankingCoordinator], SensorEntit
         self._attr_state_class = SensorStateClass.TOTAL
 
     @property
-    def native_value(self):
+    def native_value(self) -> float | None:
         """Return the current account balance."""
         if not self.coordinator.data:
             return None

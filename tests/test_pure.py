@@ -189,8 +189,11 @@ def test_account_labels_unique_last4_stay_plain():
         "",
         "not a url",
         "https://",
-        # IDN homoglyph (kyrillisches 'а')
-        "https://атруvia.de/fints",
+        # Do not "fix" the ambiguous-character warnings below: the domain
+        # spells "atruvia" with Cyrillic lookalikes, and latinising it would
+        # make this case pass for the wrong reason.
+        # IDN homoglyph (kyrillisches 'а')  # noqa: RUF003 - see above
+        "https://атруvia.de/fints",  # noqa: RUF001 - see above
     ],
 )
 def test_validate_https_url_rejects_unsafe(url):
@@ -224,7 +227,7 @@ def test_redact_credentials_strips_sensitive_keys():
         }
     )
     assert redacted["username"] == "***"
-    assert redacted["password"] == "***"
+    assert redacted["password"] == "***"  # noqa: S105 - the redaction marker, not a credential
     assert redacted["credential_id"] == "***"
     assert redacted["other"] == "ok"
 
