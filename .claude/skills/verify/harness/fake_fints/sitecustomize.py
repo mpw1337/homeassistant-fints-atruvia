@@ -141,6 +141,10 @@ class FakeFinTS3PinTanClient:
         self.init_tan_response = None
         self.selected_tan_medium = None
         self._mech = "999"
+        # Real FinTS3PinTanClient.__init__ always sets these two, so api.py may
+        # read them even on the failure paths (its no-mechanism debug line does).
+        self.allowed_security_functions = []
+        self.selected_security_function = None
         # pin_len only — never log the PIN itself, not even a fake one
         _log(f"CONNECT server={server} user={user_id} blz={bank_identifier} "
              f"product={product_id} pin_len={len(pin) if pin else 0} "
@@ -148,7 +152,10 @@ class FakeFinTS3PinTanClient:
 
     # --- dialog / TAN plumbing ------------------------------------------
     def fetch_tan_mechanisms(self):
-        return {} if _flag("nomech") else {"942": "SecureGo plus"}
+        mechs = self.get_tan_mechanisms()
+        # Mirrors fints/client.py: the HITANS parameters populate this list.
+        self.allowed_security_functions = list(mechs)
+        return mechs
 
     def get_tan_mechanisms(self):
         return {} if _flag("nomech") else {"942": "SecureGo plus"}
