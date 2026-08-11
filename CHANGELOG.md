@@ -1,0 +1,132 @@
+# Changelog
+
+Alle nennenswerten Änderungen an diesem Projekt werden hier dokumentiert.
+Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/);
+Einträge sind deutsch, konsistent mit `README.md` / `SECURITY.md`.
+
+## [0.5.0] - 2026-08-11
+
+Bugfix- und Härtungs-Runde auf Basis eines Runtime-Verifikationslaufs gegen
+eine synthetische Sandbox-Bank (`docs/verification-2026-07-31.md`) und eines
+anschließenden Code-Review-Durchgangs (`docs/verification-2026-08-10.md`).
+
+**Migration:** Config-Entries werden beim nächsten HA-Start automatisch von
+v1 über v2 nach v3 migriert — kein manueller Schritt nötig. HA-Backups, die
+*vor* der v1→v2-Migration angelegt wurden, enthalten weiterhin den
+Klartext-PIN und sollten gelöscht oder neu (mit Backup-Passwort) erzeugt
+werden. Siehe `SECURITY.md` §8.
+
+### Sicherheit
+
+- Der `unique_id` der Config-Entry enthielt BLZ und Login zunächst im
+  Klartext, dann als unsalted Hash in `.storage/core.config_entries` und
+  wurde über die `config/config_entries/get`-WebSocket-API ausgeliefert.
+  Ersetzt durch einen mit dem Master-Fernet-Key **HMAC-SHA256**-geschlüsselten
+  Hash; Config-Flow ist jetzt bei `VERSION = 3`, mit einer v2→v3-Migration,
+  die fail-open auf die alte `unique_id` zurückfällt, falls die Anmeldedaten
+  nicht entschlüsselt werden können.
+- Die Lovelace-Karte interpolierte den konfigurierten `title:` sowie die
+  bankseitig gelieferten letzten vier IBAN-Ziffern per `escapeHtml()` in das
+  `header="..."`-Attribut der Karte — `escapeHtml()` escaped aber keine
+  Anführungszeichen, sodass ein `"` im Titel oder in der IBAN das Attribut
+  verlassen und Markup injizieren konnte. Neuer `escapeAttr()`-Helper deckt
+  jetzt auch den Attribut-Kontext ab.
+- Nach der Unique-ID-Migration blieb die Klartext-IBAN in
+  `previous_unique_id` der Entity-Registry stehen. Wird jetzt direkt nach der
+  Migration geleert.
+- Der Konto-Picker im Config-Flow zeigte die volle Kontonummer im Label
+  (`Konto …3000 (0000123456)`) an, die zusammen mit der im selben Flow
+  sichtbaren BLZ die volle IBAN rekonstruierbar machte. Label zeigt jetzt nur
+  `Konto …{last4}`, mit einer nicht-identifizierenden laufenden Nummer nur
+  bei doppelten letzten vier Ziffern.
+
+### Behoben
+
+- `TanRequiredError` während eines laufenden HA-Neustarts löste wegen eines
+  ungültigen `raise ... from`-Chainings einen `TypeError` statt
+  `ConfigEntryAuthFailed` aus und brach damit den 90-Tage-Reauth-Flow.
+- Bereits gesehene Transaktions-Hashes wurden mitten im Poll-Durchlauf pro
+  Konto geschrieben; scheiterte ein späteres Konto im selben Durchlauf (z. B.
+  mit `TanRequiredError`), gingen `fints_atruvia_new_transaction`-Events für
+  bereits verarbeitete Konten dauerhaft verloren. Hashes werden jetzt erst
+  nach einem vollständig erfolgreichen Poll-Durchlauf gemerged.
+- `async_shutdown` im Coordinator rief `super().async_shutdown()` nicht auf,
+  wodurch HAs eigene Abmeldung von geplanten Refreshs nie lief.
+- `config_entry` wurde nicht an `DataUpdateCoordinator.__init__` durchgereicht
+  (laut HA als Fallback mit `breaks_in_ha_version: "2026.8"` markiert).
+- `FintsStateStore` konnte eine echte v1-Plaintext-State-Datei aus der Zeit
+  vor der Fernet-Verschlüsselung nicht mehr laden — HAs Standard-Storage
+  bricht die Migration ohne eigenen `_async_migrate_func` mit
+  `NotImplementedError` ab. Neuer `_MigratingStore` gibt alte Daten
+  unverändert zurück, statt abzubrechen.
+- Der `FinTsAtruviaClient` eines abgebrochenen Config-Flows (PIN im
+  `pin_provider`) wurde nie geschlossen, wenn der Nutzer den Flow verließ,
+  ohne ihn abzuschließen. Neuer `async_remove()`-Teardown-Hook schließt ihn.
+- Der Options-Toggle „Verwendungszweck und Empfängername exponieren" wirkte
+  erst nach dem nächsten 6-Stunden-Poll oder einem manuellen Entry-Reload. Ein
+  Options-Update-Listener lädt die Config-Entry jetzt sofort neu.
+- Bei mehr als fünf Buchungen im 30-Tage-Fenster zeigte die Karte die
+  ältesten statt der neuesten fünf Transaktionen im Bereich „Letzte
+  Transaktionen" an. Wird jetzt vor dem Slicing absteigend nach Datum
+  sortiert.
+- Die Karte ignorierte die `title:`-Konfigurationsoption und zeigte immer den
+  Entity-Friendly-Name als Überschrift.
+
+### Hinzugefügt
+
+- `translations/en.json` — HA lädt Übersetzungen zur Laufzeit ausschließlich
+  aus `translations/<lang>.json` ohne Fallback auf `strings.json`, sodass
+  englischsprachige Instanzen bislang rohe Config-/Options-Flow-Keys statt
+  Labels angezeigt bekamen.
+
+### Intern
+
+- `ruff format` erstmals über die gesamte Codebase laufen lassen und den
+  verbleibenden Lint-Backlog (92 Findings) manuell aufgeräumt; Widersprüche
+  in `.ruff.toml` bereinigt (`pep257`-Convention, `extend-exclude` für den
+  Verify-Harness und `*.md`, `tests/**`-Ausnahmen für Standard-Pytest-Muster).
+- `ruff check .` und `ruff format --check .` sind jetzt tatsächlich in
+  `.github/workflows/validate.yml` gegated, Ruff auf `0.16.2` gepinnt.
+- CI: `actions/checkout`/`setup-uv` auf ihre Node-24-Majore angehoben,
+  `setup-uv` auf `v9.0.0` gepinnt, HACS-Brands-Check übersprungen.
+- Regressionstests für alle oben genannten Fixes ergänzt (u. a.
+  `tests/test_coordinator.py`, `tests/test_storage.py`, `tests/test_init.py`)
+  sowie den Options-Listener und den Flow-Client-Close abgesichert.
+
+## [0.4.0] - 2026-07-30
+
+Erste Veröffentlichungs-Runde: Lovelace-Karte wird mit der Integration
+ausgeliefert, Repository für HACS vorbereitet.
+
+- Lovelace-Karte wird jetzt mit der Integration ausgeliefert und beim Setup
+  automatisch als Dashboard-Ressource registriert (`frontend.py`), statt
+  manuell nach `config/www/` kopiert werden zu müssen.
+- Repository für die Veröffentlichung vorbereitet (u. a. `hacs.json`,
+  Issue-Tracker- und Dokumentations-Links im Manifest).
+- Erster Runtime-Verifikationslauf gegen eine synthetische Sandbox-Bank
+  hinzugefügt (`.claude/skills/verify/`); Ergebnisse dokumentiert in
+  `docs/verification-2026-07-31.md`.
+- Veraltete IBAN-Test-Assertions korrigiert, die noch auf die alten
+  Test-Fixture-Daten verwiesen.
+
+## [0.3.0] - 2026-05-15
+
+Dedizierter Härtungs-Pass gegenüber v0.2.0:
+
+- FinTS-State-Cache (`system_id`, BPD, UPD) Fernet-verschlüsselt statt als
+  Hex-Plaintext auf der Disk.
+- Bank-Texte (Verwendungszweck, Empfängername) verlassen die Integration
+  standardmäßig nicht mehr; Opt-in per Options-Flow je Config-Entry.
+- Entity-`unique_id` durch einen gesalzenen SHA-256-Hash der IBAN ersetzt
+  statt der Klartext-IBAN; bestehende Entries migrieren automatisch beim
+  Start, History und Statistik bleiben erhalten.
+- XSS-Lücken in der Lovelace-Karte geschlossen — die NaN-Fallback-Sinks
+  `balanceFormatted` und `txFormatted` waren zuvor ungeescaped.
+- IDN-/Punycode-Phishing-Block für Custom-URLs mit Nicht-ASCII-Hostnamen.
+- Log-Hygiene: keine `_LOGGER.exception`-Tracebacks mehr aus FinTS-Pfaden,
+  kein `%r`-Repr-Logging auf Transaktions-Objekten.
+- v1→v2-Migration idempotent gemacht, inklusive Self-Check, dass
+  `password`/`username` nach der Migration tatsächlich aus `entry.data`
+  entfernt wurden.
+- Regressionstests für IBAN-Maskierung, Unique-ID-Hashing, URL-Validierung,
+  Storage-Round-Trip und Event-Payload-Shape ergänzt.

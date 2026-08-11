@@ -2,18 +2,16 @@
 
 Sicherheitsmodell und Härtungen der FinTS-Atruvia-Integration.
 
-## Neu in v0.3.0
+## Neu in v0.5.0
 
-Diese Release ist ein dedizierter Härtungs-Pass. Wer von v0.2.0 kommt, profitiert ohne Konfigurationsänderung von:
+Diese Runde ist primär ein Bugfix- und Härtungs-Pass auf Basis eines Runtime-Verifikationslaufs (`docs/verification-2026-07-31.md`) und eines anschließenden Code-Reviews (`docs/verification-2026-08-10.md`). Wer von v0.4.0 kommt, profitiert ohne Konfigurationsänderung von:
 
-- **State-Cache verschlüsselt** (§4) — `system_id`, BPD, UPD waren bislang als Hex-Plaintext auf der Disk; jetzt Fernet.
-- **Bank-Texte standardmäßig privat** (§6) — `purpose` und `applicant_name` verlassen die Integration nicht mehr per Default. Wer sie braucht, aktiviert sie per Options-Flow je Entry.
-- **IBAN auch aus der Entity-Registry raus** (§5) — `unique_id` ist jetzt ein gesalzener SHA-256-Hash. Bestehende Entries werden beim Start automatisch migriert; History/Statistik bleiben erhalten.
-- **XSS-Lücken in der Lovelace-Karte geschlossen** (§9) — die NaN-Fallback-Sinks `balanceFormatted` und `txFormatted` waren in v0.2.0 noch ungeescaped.
-- **IDN-Phishing-Block** (§2) — Custom-URLs mit Nicht-ASCII-Hostname werden abgelehnt.
-- **Log-Hygiene** (§10) — keine `_LOGGER.exception`-Tracebacks mehr aus FinTS-Pfaden; keine `%r`-Repr-Logs auf Transaktions-Objekten.
-- **Migration idempotent + Self-Check** (§8) — der v1→v2-Upgrade lässt keine Klartext-Reste in `core.config_entries` zurück, auch nicht nach einem Crash mid-migration.
-- **Regression-Tests** für IBAN-Maskierung, Unique-ID-Hashing, URL-Validierung, Storage-Round-Trip und Event-Payload-Shape — siehe `tests/`.
+- **Config-Entry-`unique_id` jetzt HMAC-geschlüsselt** (§8) — statt eines unsalted Hash aus BLZ+Login liegt in `.storage/core.config_entries` jetzt ein mit dem Master-Fernet-Key geschlüsselter HMAC-SHA256; Config-Flow ist bei `VERSION = 3`, bestehende Entries migrieren automatisch beim nächsten Start.
+- **Attribut-Kontext-Escaping in der Lovelace-Karte** (§9) — neuer `escapeAttr()`-Helper verhindert, dass ein `"` im konfigurierten `title:` oder in der bankseitig gelieferten IBAN aus dem `header="..."`-Attribut ausbricht.
+- **Echte v1-State-Dateien wieder lesbar** (§4) — `_MigratingStore` behebt einen Bug, durch den `FintsStateStore` beim Setup abgebrochen wäre, sobald eine echte (nicht nur simulierte) Plaintext-State-Datei aus der Zeit vor der Fernet-Verschlüsselung vorlag.
+- **Options-Toggle wirkt sofort** (§6) — Umschalten von „Verwendungszweck und Empfängername exponieren" lädt die Config-Entry jetzt automatisch neu, statt erst beim nächsten 6-Stunden-Poll zu greifen.
+
+Der vollständige Befund- und Fix-Katalog dieser Runde (u. a. verlorene Events bei Mehrkonten-Fehlern, TAN-Timing beim Neustart, IBAN-Rest in `previous_unique_id`, Konto-Picker-Label) steht im [CHANGELOG](CHANGELOG.md) unter 0.5.0 sowie in den beiden Verifikationsberichten. Der v0.3.0-Härtungs-Pass ist ebenfalls ins CHANGELOG umgezogen.
 
 ## Bedrohungsmodell
 
