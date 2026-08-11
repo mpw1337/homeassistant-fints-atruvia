@@ -33,7 +33,7 @@ cd frontend && npm run watch                    # rebuild on save
 
 ### Running tests outside the devcontainer
 
-`pyproject.toml` declares `requires-python = ">=3.14"` (matches `manifest.json: "homeassistant": "2026.3.2"` — HA pins Python ≥ 3.14.2). On a host with `uv` but only an older system Python, `uv` will download Python 3.14 automatically:
+`pyproject.toml` declares `requires-python = ">=3.14"` (matches `hacs.json: "homeassistant": "2026.3.2"` — HA pins Python ≥ 3.14.2). On a host with `uv` but only an older system Python, `uv` will download Python 3.14 automatically:
 
 ```bash
 uv venv --python 3.14                                  # one-time
@@ -41,7 +41,7 @@ uv pip install -r requirements.txt                     # one-time
 PYTHONPATH=$PWD .venv/bin/pytest                       # run the suite
 ```
 
-If `requires-python` ever gets out of sync with the HA pin, `uv pip install -r requirements.txt` will fail with an unsatisfiable-resolver error — bump both together with `manifest.json`.
+If `requires-python` ever gets out of sync with the HA pin, `uv pip install -r requirements.txt` will fail with an unsatisfiable-resolver error — bump both together with `hacs.json`.
 
 `config/` is HA's runtime config (gitignored except `configuration.yaml` and `www/.gitkeep`). The custom component lives in `custom_components/fints_atruvia/` and is picked up via `PYTHONPATH=$PWD` injected by `scripts/develop`.
 
@@ -115,5 +115,5 @@ Plain rollup build of `src/fints-card.js` → **two** targets: `../custom_compon
 - **Log hygiene:** never `_LOGGER.exception(...)` from FinTS / config-flow / button paths — python-fints stringifies HBCI segments which can include account numbers. Use `_LOGGER.error("...: %s", type(exc).__name__)` and let the chained exception carry the detail to `debug`. Avoid `%r` on transaction objects for the same reason.
 - **HTTPS-only:** `_validate_https_url` rejects non-https URLs and non-ASCII hostnames (IDN/Punycode block). `FinTsAtruviaClient.__init__` also asserts `https://`. Don't bypass either.
 - **Test discipline:** security-sensitive behaviour (IBAN masking, unique-id hashing, URL validation, storage round-trip, event payload shape) has regression tests in `tests/`. Adding a code path that touches any of those without a corresponding test is a regression risk.
-- **Manifest pinning:** the minimum HA version lives in `hacs.json` (`homeassistant: "2026.3.2"`) — *not* in `manifest.json`, whose key set is closed (hassfest `CUSTOM_INTEGRATION_MANIFEST_SCHEMA` rejects extras). `requirements.txt` pins the same version for the dev environment, and `pyproject.toml` pins `requires-python = ">=3.14"` so `uv` picks the right interpreter outside the devcontainer. Bump all three together.
+- **Manifest pinning:** the minimum HA version lives in `hacs.json` (`homeassistant: "2026.3.2"`) — *not* in `manifest.json`, whose key set is closed (hassfest `CUSTOM_INTEGRATION_MANIFEST_SCHEMA` rejects extras). `requirements.txt` pins the same version for the dev environment, and `pyproject.toml` pins `requires-python = ">=3.14"` so `uv` picks the right interpreter outside the devcontainer. Bump all three together, and bump `manifest.json`'s own `version` field alongside them for a release.
 - **Translations:** `strings.json`, `translations/de.json` and `translations/en.json` must be kept structurally identical (same keys, German text in all three — this project doesn't localize UI strings, see "What this is"). HA loads translations exclusively from `<integration>/translations/<lang>.json`; there is no fallback to `strings.json` at runtime (that file is read by hassfest only), so a missing `translations/en.json` leaves English-locale instances showing raw keys instead of labels.
