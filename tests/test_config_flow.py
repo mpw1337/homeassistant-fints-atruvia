@@ -11,6 +11,7 @@ from homeassistant.config_entries import SOURCE_USER
 from homeassistant.data_entry_flow import FlowResultType, UnknownFlow
 
 from custom_components.fints_atruvia import DOMAIN, _entry_unique_id
+from custom_components.fints_atruvia.api import NoTanMechanismError
 from custom_components.fints_atruvia.config_flow import FintsBankingConfigFlow
 from custom_components.fints_atruvia.storage import async_get_master_key
 
@@ -111,6 +112,40 @@ async def test_flow_unique_id_is_keyed_hmac(hass):
     # core.config_entries could have brute-forced back to the login.
     unsalted = hashlib.sha256(b"12345678|netkey1").hexdigest()[:16]
     assert unique_id != unsalted
+
+
+async def test_flow_shows_dedicated_error_when_bank_offers_no_tan_mechanism(hass):
+    """``NoTanMechanismError`` must surface as ``no_tan_mechanism``.
+
+    Before the fix, python-fints' own ``KeyError`` for this case fell through
+    the blanket ``except Exception`` and looked identical to a network
+    failure — indistinguishable from a wrong URL or a down bank.
+    """
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+    assert result["type"] is FlowResultType.FORM
+
+    client = MagicMock()
+    client.init_system_id.side_effect = NoTanMechanismError(
+        "Bank offered no supported two-step TAN mechanism"
+    )
+    with patch(
+        "custom_components.fints_atruvia.config_flow.FinTsAtruviaClient",
+        return_value=client,
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                "blz": "12345678",
+                "username": "netkey1",
+                "password": "hunter2",
+                "url": _URL,
+            },
+        )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "no_tan_mechanism"}
 
 
 async def test_abandoned_flow_closes_client(hass):

@@ -111,6 +111,12 @@ Credential-Blob an, statt die bestehende zu deduplizieren.
   gar nicht diese Karte betraf. `_render()` vergleicht die generierte HTML
   jetzt mit der zuletzt geschriebenen und überspringt den Write, wenn sich
   nichts geändert hat.
+- Bot die Bank kein unterstütztes Zwei-Schritt-TAN-Verfahren an (kein
+  Antwortcode 3920, BPD zurückgehalten oder nur nicht unterstützte
+  HITANS-Versionen), scheiterte der Config-Flow mit einem rohen `KeyError`
+  aus python-fints und zeigte `cannot_connect` — ununterscheidbar von einer
+  echten Netzwerkstörung. Neue `NoTanMechanismError` fängt diesen Fall vor
+  dem Aufruf ab und zeigt eine eigene Fehlermeldung (`no_tan_mechanism`).
 
 ### Hinzugefügt
 

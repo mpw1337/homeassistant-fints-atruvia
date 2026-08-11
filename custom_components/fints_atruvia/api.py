@@ -33,6 +33,7 @@ _LOGGER = logging.getLogger(__name__)
 _MSG_INSECURE_URL = (
     "FinTS endpoint URL must use https://. Plain http would leak the PIN in transit."
 )
+_MSG_NO_TAN_MECHANISM = "Bank offered no supported two-step TAN mechanism"
 
 
 class TanRequiredError(Exception):
@@ -46,6 +47,10 @@ class TanRequiredError(Exception):
 
 class InvalidUrlError(ValueError):
     """Raised when a FinTS endpoint URL is not an https:// URL."""
+
+
+class NoTanMechanismError(Exception):
+    """Raised when the bank offers no supported two-step TAN mechanism."""
 
 
 def _safe_decimal(value: Any) -> Decimal | None:
@@ -270,6 +275,11 @@ class FinTsAtruviaClient:
         closed) or a ``NeedTANResponse`` if SCA is pending. In the latter
         case the standing dialog stays open and the caller MUST call
         ``complete_tan()`` to finish setup.
+
+        Raises ``NoTanMechanismError`` if the bank offers no usable two-step
+        TAN mechanism (no response code 3920, BPD withheld, or only
+        unsupported HITANS versions) — without this guard python-fints'
+        ``is_tan_media_required()`` raises a raw ``KeyError`` instead.
         """
         client = self._build_client()
         self._client = client
@@ -289,6 +299,15 @@ class FinTsAtruviaClient:
                 if sec_func != "999":
                     client.set_tan_mechanism(sec_func)
                     break
+
+        if client.get_current_tan_mechanism() in (None, "999"):
+            _LOGGER.debug(
+                "No two-step TAN mechanism negotiable: "
+                "%d allowed security functions, %d supported mechanisms",
+                len(client.allowed_security_functions),
+                len(client.get_tan_mechanisms()),
+            )
+            raise NoTanMechanismError(_MSG_NO_TAN_MECHANISM)
 
         if client.selected_tan_medium is None and client.is_tan_media_required():
             _, media = client.get_tan_media()

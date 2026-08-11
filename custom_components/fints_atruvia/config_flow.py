@@ -27,7 +27,7 @@ from . import (
     DOMAIN,
     _entry_unique_id,
 )
-from .api import FinTsAtruviaClient, InvalidUrlError
+from .api import FinTsAtruviaClient, InvalidUrlError, NoTanMechanismError
 from .storage import (
     CredentialStoreError,
     FintsCredentialStore,
@@ -248,6 +248,15 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
 
         try:
             result = await self.hass.async_add_executor_job(self._client.init_system_id)
+        except NoTanMechanismError:
+            _LOGGER.error(  # noqa: TRY400 - log hygiene: static text only, no exception content (SECURITY.md §10)
+                "FinTS system-ID init failed: no supported two-step TAN mechanism"
+            )
+            return self.async_show_form(
+                step_id="user",
+                data_schema=STEP_USER_SCHEMA,
+                errors={"base": "no_tan_mechanism"},
+            )
         except Exception as exc:  # noqa: BLE001
             # Log only the exception type. python-fints errors may quote
             # bank-response content (HBCI segments can include account
