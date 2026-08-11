@@ -18,6 +18,7 @@ Environment:
                           D/tanmode2          SCA for the *second* account only
                           D/nohisal           get_balance answers without a HISAL
                           D/nobooked          HISAL without a booked balance
+                          D/nomech            bank offers no two-step TAN mechanism (empty BPD/3920)
   FAKE_FINTS_TAN=1      same as the tanmode flag, from startup
 """
 import datetime
@@ -147,10 +148,10 @@ class FakeFinTS3PinTanClient:
 
     # --- dialog / TAN plumbing ------------------------------------------
     def fetch_tan_mechanisms(self):
-        return {"942": "SecureGo plus"}
+        return {} if _flag("nomech") else {"942": "SecureGo plus"}
 
     def get_tan_mechanisms(self):
-        return {"942": "SecureGo plus"}
+        return {} if _flag("nomech") else {"942": "SecureGo plus"}
 
     def get_current_tan_mechanism(self):
         return self._mech
@@ -159,6 +160,12 @@ class FakeFinTS3PinTanClient:
         self._mech = mech
 
     def is_tan_media_required(self):
+        # Mirrors fints/client.py: looks the current mechanism up in the BPD
+        # segment 3920 (here, get_tan_mechanisms()) before answering. Under
+        # ``nomech`` with ``_mech`` still "999" this raises KeyError('999')
+        # exactly like the real library — the Task-1 guard in api.py must
+        # keep this line from ever being reached.
+        mech = self.get_tan_mechanisms()[self._mech]
         return False
 
     def get_tan_media(self, *a, **kw):
