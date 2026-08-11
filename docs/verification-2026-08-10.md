@@ -9,10 +9,10 @@ prior report — see finding #8 below.
 **Method:** static code review of `custom_components/fints_atruvia/` plus the
 existing and newly added unit tests (`PYTHONPATH=$PWD .venv/bin/pytest -q`).
 No real Home Assistant instance was started and no runtime harness was run
-for this round — the `.claude/skills/verify/` runtime verification (the
-method used for the 2026-07-31 report) is still outstanding for these eight
-fixes. Treat the items below as reviewed against the source and against unit
-tests, not against a running HA instance.
+for this round. The `.claude/skills/verify/` runtime verification (the method
+used for the 2026-07-31 report) was done afterwards and is reported in
+[`verification-2026-08-11.md`](verification-2026-08-11.md); read the status
+lines below together with it.
 
 Eight bugs were found during that review and fixed in this round, on branch
 `fix/verification-findings-2026-08-10`:
@@ -21,7 +21,7 @@ Eight bugs were found during that review and fixed in this round, on branch
 
 ## 1. `TypeError` instead of `ConfigEntryAuthFailed` on TAN-required during restart
 
-**Severity:** high (breaks the documented 90-day SCA/re-auth flow) · **Status:** fixed
+**Severity:** high (breaks the documented 90-day SCA/re-auth flow) · **Status:** fixed, runtime-verified 2026-08-11
 
 `coordinator.py`, in `_async_update_data`'s `except TanRequiredError as e:`
 block, `raise ConfigEntryAuthFailed(...) from e.response` tried to chain a
@@ -40,7 +40,7 @@ guard against this exact bug.
 
 ## 2. Seen-transaction hashes written before the update actually succeeded
 
-**Severity:** medium (silent, permanent event loss) · **Status:** fixed
+**Severity:** medium (silent, permanent event loss) · **Status:** fixed, runtime-verified 2026-08-11
 
 `coordinator.py`'s `_detect_new_transactions` mutated
 `self._seen_hashes[iban]` as its last statement, inside the per-account loop
@@ -62,7 +62,8 @@ test: `test_no_lost_events_when_later_account_fails` in
 
 ## 3. `async_shutdown` skipped the base-class shutdown
 
-**Severity:** low · **Status:** fixed
+**Severity:** low · **Status:** fixed; runtime run 2026-08-11 confirmed clean reloads but could not
+observe the orphaned-timer symptom (6-hour `update_interval`)
 
 `coordinator.py`'s `async_shutdown` wiped the PIN and closed the FinTS client
 without calling `super().async_shutdown()`, so HA's
@@ -78,7 +79,10 @@ the shutdown listener were not unsubscribed.
 
 ## 4. `config_entry` not passed to `DataUpdateCoordinator.__init__`
 
-**Severity:** low (forward-compat) · **Status:** fixed
+**Severity:** low (forward-compat) · **Status:** fixed, but the justification below is
+wrong: HA passes `custom_integration_behavior=ReportBehavior.IGNORE` for this
+report and its source comments say enforcement for custom integrations is not
+planned — see finding 4 in [`verification-2026-08-11.md`](verification-2026-08-11.md)
 
 `FintsBankingCoordinator.__init__` set `self.config_entry = config_entry`
 manually instead of passing it to `super().__init__()`. HA's fallback
@@ -94,7 +98,7 @@ to break in HA 2026.8 (`frame.report_usage(..., breaks_in_ha_version=
 
 ## 5. `FintsStateStore` could not read real v1 state files
 
-**Severity:** high (breaks setup for any pre-encryption install) · **Status:** fixed
+**Severity:** high (breaks setup for any pre-encryption install) · **Status:** fixed, runtime-verified 2026-08-11
 
 `storage.py`'s `FintsStateStore` (version 2, Fernet-encrypted) was documented
 as reading legacy v1 (plaintext-hex) state files transparently, but HA's
@@ -117,7 +121,11 @@ so it never exercised HA's migration path and passed regardless of the bug.
 
 ## 6. Config-entry `unique_id` stored the bank login in cleartext
 
-**Severity:** medium (credential exposure via `.storage/core.config_entries`, WS API) · **Status:** fixed
+**Severity:** medium (credential exposure via `.storage/core.config_entries`) ·
+**Status:** fixed, runtime-verified 2026-08-11 — but the WS-API half of the
+claim below does not hold on HA 2026.3.2: `ConfigEntry.as_json_fragment` carries
+no `unique_id`. See finding 4 in
+[`verification-2026-08-11.md`](verification-2026-08-11.md)
 
 `config_flow.py` set the config entry's `unique_id` to `f"{blz}_{username}"`.
 Unlike `entry.data` (which only ever holds `credential_id`), this value is
@@ -150,7 +158,9 @@ tests in `tests/test_pure.py`.
 
 ## 7. FinTS client with a live PIN reference never closed on an abandoned flow
 
-**Severity:** low (resource/PIN-lifetime hygiene) · **Status:** fixed
+**Severity:** low (resource/PIN-lifetime hygiene) · **Status:** fixed; the teardown
+path was exercised at runtime 2026-08-11 without error, but the fake bank has no
+observable for `close()`, so the call itself stays unproven
 
 `config_flow.py` built a `FinTsAtruviaClient` (holding the PIN via its
 `pin_provider` callable) during the flow, but if the user abandoned the flow
@@ -168,7 +178,7 @@ completion path (Task 4, commit `83d73ed`).
 
 ## 8. Card header attribute broke out of its quotes on a `"` in the title or IBAN
 
-**Severity:** medium (attribute-context XSS) · **Status:** fixed
+**Severity:** medium (attribute-context XSS) · **Status:** fixed, runtime-verified 2026-08-11
 
 `frontend/src/fints-card.js`'s `_renderEntity` interpolated the
 user-configured `title:` and the bank-supplied `last4` into
@@ -191,17 +201,20 @@ untrusted data, so they don't need the same treatment.
 
 ---
 
-## Not yet re-verified at runtime
+## Re-verified at runtime
 
-The eight fixes above are covered by unit tests and were reviewed against
-the source, but none of them has been exercised against a running Home
-Assistant instance yet. In particular, worth confirming with
-`.claude/skills/verify/` before the next release:
+All eight fixes above have since been exercised against a running Home
+Assistant 2026.3.2 with an offline fake bank — see
+[`verification-2026-08-11.md`](verification-2026-08-11.md), which also covers
+the v1→v3 migration against a real `.storage/core.config_entries` file, the
+options-update-listener reload, and the card's `title:` and
+transaction-ordering behaviour in an actual dashboard. Findings #1, #2, #3,
+#5, #7 and #8 held; #4 and #6 hold as fixes but their justifications above are
+inaccurate (see the status notes). Two items remain open after that round:
 
-- The v1→v3 and v2→v3 config-entry migrations against a real
-  `.storage/core.config_entries` file (not just `MockConfigEntry`).
-- That the new options-update-listener reload (finding #3 in the prior
-  report) doesn't trigger an unexpected SCA prompt on a real Atruvia
-  instance.
-- The card's `title:` and transaction-ordering behaviour rendered in an
-  actual dashboard, beyond the `node -e` extraction used in Task 5.
+- Whether the options-toggle reload triggers an extra SCA prompt on a real
+  Atruvia instance. The reload costs exactly one additional bank dialog, but
+  the offline fake cannot answer what a real gateway does with it.
+- Whether the abandoned-flow client teardown of finding #7 actually runs. The
+  fake bank has no observable for `close()`; the teardown path was exercised
+  without error, but the call itself is unproven at runtime.
