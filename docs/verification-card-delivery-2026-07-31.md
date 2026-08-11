@@ -18,7 +18,7 @@ Playwright as `dev`. No real config, no real bank.
 | No duplicate across a full HA restart | After `stop` + `start` → still one item, same `id` |
 | Version bump updates in place (cache-busting) | `manifest.json` → `0.4.1`, restart → same `id`, url now `?v=0.4.1`; reverted to `0.4.0` afterwards |
 | The browser actually loads it | `performance.getEntriesByType('resource')` contains `http://127.0.0.1:8199/fints_atruvia/fints-atruvia-card.js?v=0.4.0` and nothing under `/local/` |
-| Card renders | `customElements.get('fints-atruvia-card')` truthy, 1 card in the DOM, 4 458 chars of shadow DOM, balance `1.234,56 €`, masked IBAN `DE** **** **** **** 3000`, degraded view text shown (`expose_full_data` off) — screenshot `.playwright-mcp/card-served-from-integration.png` |
+| Card renders | `customElements.get('fints-atruvia-card')` truthy, 1 card in the DOM, 4 458 chars of shadow DOM, balance `1.234,56 €`, masked IBAN `DE** **** **** **** 3000`, degraded view text shown (`expose_full_data` off) — screenshot `.playwright-mcp/card-served-from-integration.png` (no longer on disk, see note below) |
 | No new log noise | Only the standard "custom integration … has not been tested" warning for the domain; no card-registration warning or traceback |
 
 Sensors were unaffected: `sensor.konto_3000` = `1234.56` with the expected
@@ -33,6 +33,16 @@ disturb setup.
   entry-reload/restart checks above exercise the same early-return paths.
 - YAML resource mode is covered by unit test only
   (`test_yaml_resource_mode_writes_nothing`) — the sandbox runs storage mode.
+
+## Note on the screenshot cited above
+
+`.playwright-mcp/card-served-from-integration.png` no longer exists: the
+2026-08-11 verification round cleaned up `.playwright-mcp/` wholesale and
+removed this round's artefacts along with its own. The directory was and is
+gitignored, so the file was never part of the repository. Every measurement in
+the table above is textual and unaffected; only the visual confirmation of the
+rendered card is gone, and it was re-established from scratch in
+[`verification-2026-08-11.md`](verification-2026-08-11.md).
 
 ## Note on the dashboard path
 

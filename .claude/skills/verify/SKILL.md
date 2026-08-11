@@ -155,7 +155,15 @@ care about inside the first five (clear `extra1`/`extra2` when using `xss`).
   8123 instead of 8199 — a sign the bootstrap deps are incomplete.
 - `hassil` must stay pinned to `3.5.0`; 3.10 has no `hassil.fuzzy`.
 - Playwright MCP only writes inside the repo, e.g. `.playwright-mcp/` — clean
-  up screenshots afterwards or mention them as evidence.
+  up your own screenshots afterwards or mention them as evidence, but delete
+  them individually: earlier rounds left theirs in the same directory and
+  `docs/verification-card-delivery-2026-07-31.md` cites one by filename.
+- **An abandoned config flow's `client.close()` is not observable.** The fake
+  logs only `CONNECT` and `SEND_TAN`, and on the no-SCA path `init_system_id`
+  has already closed the standing dialog in its `finally`, so `close()` just
+  drops references — nothing reaches `fakebank.log`, and instrumenting
+  `__exit__` or `__del__` would not discriminate either. Drive the flow and
+  `DELETE` it to prove the teardown path runs without error; don't expect more.
 
-Findings from prior runs: `docs/verification-2026-07-31.md` and
-`docs/verification-2026-08-10.md`.
+Findings from prior runs: `docs/verification-2026-07-31.md`,
+`docs/verification-2026-08-10.md` and `docs/verification-2026-08-11.md`.

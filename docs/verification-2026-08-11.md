@@ -280,8 +280,9 @@ CONNECT server=https://fints.sandbox.invalid/fints30 user=otheruser blz=88888888
 raising `close()` submitted via `async_add_executor_job` without a result
 handler would surface).
 
-The brief for this round expected `fakebank.log` to "show the client as
-ended". It cannot: the fake logs `CONNECT` and `SEND_TAN` only, and by the time
+The task brief for this round expected `fakebank.log` to "show the client as
+ended" (`SKILL.md` never made that claim). It cannot: the fake logs `CONNECT`
+and `SEND_TAN` only, and by the time
 `close()` runs the standing dialog has already been closed inside
 `init_system_id`, so `close()` merely drops references — nothing the fake can
 see. Instrumenting the fake with `__del__` would not discriminate either,
@@ -438,19 +439,37 @@ produces no such rows.)
 This is the same class as the 2026-07-31 finding 1 (`previous_unique_id`
 residue), which was fixed for the registry file — `previous_unique_id` is
 verified `None` on all seven rows here — but the migration *event* was not
-considered. `iban_unique_id()`'s docstring and `CLAUDE.md` say the plaintext
-IBAN survives in neither `unique_id` nor `previous_unique_id`; that is true of
-the registry and false of the recorder DB.
+considered.
+
+**The claim this falsifies is `SECURITY.md:62`** (§5, "IBAN-Maskierung —
+flächendeckend"):
+
+> Die volle IBAN steht damit weder in `home-assistant_v2.db` noch im Event-Bus
+> noch im aktiven `unique_id`-Feld von `core.entity_registry`.
+
+Two of those three clauses are false on the migration path: the plaintext IBAN
+reaches the **event bus** (`entity_registry_updated`) and, through the
+recorder, **`home-assistant_v2.db`**. Only the third clause — the active
+`unique_id` field — holds, and it is verified above.
+
+Two documents that might look like the target are *not*:
+`iban_unique_id()`'s docstring (`custom_components/fints_atruvia/__init__.py:71-81`)
+scopes its claim explicitly to the entity registry and is accurate as written,
+and `CLAUDE.md` makes no recorder or event-bus claim at all.
 
 Scope: only installs that actually migrate legacy unique_ids (an upgrade from
 a pre-hashing version), once, and only until the recorder purge window passes
 (default `purge_keep_days: 10`) — but any backup taken inside that window
 carries it, next to the existing plaintext-PIN backup caveat.
 
-**Options** — the integration cannot suppress the event (HA fires it), so
-either document it in `SECURITY.md` alongside the backup warning, or have the
-migration recommend a recorder purge. Not fixed here by design: this report's
-author is the verifier.
+**Options** — the integration cannot suppress the event, since HA fires it, so
+the remediation is a **correction of `SECURITY.md:62`**, not an addition
+elsewhere: narrow that sentence to the active `unique_id` field and record the
+migration-event residue as a second `Restrisiko` next to the existing
+`previous_unique_id` one, optionally with a recorder-purge recommendation.
+Adding a note *beside* the sentence would leave an unretracted false claim in
+the shipped security documentation. Not done here by design — this report's
+author is the verifier, and `SECURITY.md` is outside this task's scope.
 
 ### 2. Adding an account to an existing entry replays its whole 30-day history as events
 
@@ -489,25 +508,38 @@ accounts, which exaggerates how often this happens in reality; an internal
 transfer between two accounts of the same login is the realistic case. Worth a
 sentence in the event documentation rather than a code change.
 
-### 4. `verification-2026-08-10.md` overstates two of its own findings
+### 4. The "served over the WebSocket API" claim is wrong on 2026.3.2, in four places
 
-**Severity:** trivial (documentation) · **Status:** open
+**Severity:** trivial (documentation) · **Status:** partly corrected — three
+places still carry it
 
 Both claims were checked against the installed HA 2026.3.2 source:
 
-- Finding 6 says the cleartext `unique_id` was "returned by the
+- The 2026-08-10 finding 6 says the cleartext `unique_id` was "returned by the
   `config/config_entries/get` WebSocket API to any client with read access".
   It is not: `ConfigEntry.as_json_fragment` (`config_entries.py:633-655`) does
   not include `unique_id`, and neither `config_entries/get`,
   `config_entries/get_single` nor the REST equivalent returned it here. The
   at-rest exposure in `.storage/core.config_entries` (and backups, and
   diagnostics) is real and is reason enough for the fix.
-- Finding 4 says the `ContextVar` fallback "is scheduled to break in HA
-  2026.8". For a *custom* integration it is not — the call passes
+- The 2026-08-10 finding 4 says the `ContextVar` fallback "is scheduled to
+  break in HA 2026.8". For a *custom* integration it is not — the call passes
   `custom_integration_behavior=ReportBehavior.IGNORE` and carries the upstream
   comment "It is not planned to enforce this for custom integrations."
 
-Neither changes a fix; both would mislead the next reader of that document.
+The WebSocket-API half travelled beyond that report. It is corrected in
+`verification-2026-08-10.md` by this round's amendment, but the same claim is
+still asserted in three places that are outside this task's scope to edit:
+
+| location | wording to narrow |
+|---|---|
+| `SECURITY.md:88` (§8) | "…landete und über die Config-Entries-WebSocket-API ausgeliefert wurde" |
+| `custom_components/fints_atruvia/__init__.py:89-90` (`_entry_unique_id` docstring) | "``unique_id`` lands in ``.storage/core.config_entries`` and is served over the config-entries WebSocket API" |
+| `custom_components/fints_atruvia/__init__.py:239` (`async_migrate_entry` docstring) | "…and is served over the config-entries WebSocket API." |
+
+All three should be narrowed to the at-rest exposure (storage file, backups,
+diagnostics), which is what actually motivates the HMAC. None of them changes
+the fix; all three would mislead the next reader.
 
 ### 5. Harness gaps found while probing (harness only, no production impact)
 
@@ -521,7 +553,10 @@ Neither changes a fix; both would mislead the next reader of that document.
   during a verification run; it is committed separately from the report.
 - **Open:** the fake bank has no observable for a client being closed, so the
   abandoned-flow teardown of fix 7 cannot be proven at runtime (see fix 7
-  above). `SKILL.md` and the task brief both imply it can.
+  above). The task brief for this round implied it could; `SKILL.md` never
+  claimed it (its "Flows worth driving" list does not contain the
+  abandoned-flow probe), and it now carries the limitation explicitly so the
+  next run does not go looking.
 
 ---
 
