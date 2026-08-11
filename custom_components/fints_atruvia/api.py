@@ -113,6 +113,30 @@ def _extract_booking_date(hisal_segment: Any) -> datetime.date | None:
     return getattr(hisal_segment, "booking_date", None)
 
 
+# Only the last four IBAN digits go into error messages. Home Assistant logs
+# the __cause__ chain of a failed coordinator update on two loggers at DEBUG
+# (helpers/update_coordinator.py and config_entries.py), so anything in a
+# raised message here can end up in a home-assistant.log that users paste into
+# public issues. Four digits are enough to tell two accounts apart, which is
+# the only reason the account is named at all — do not widen this back to the
+# full IBAN. This module deliberately imports nothing from homeassistant or
+# from the rest of the package (see the module docstring), so the coordinator's
+# masking helper is out of reach; the ``…{last4}`` form matches the convention
+# the config-flow account picker already uses.
+_IBAN_LAST4_LEN = 4
+_ACCOUNT_REF_UNKNOWN = "…?"
+
+
+def _account_ref(account: SEPAAccount) -> str:
+    """Return a short non-identifying reference to *account* for error messages."""
+    iban = getattr(account, "iban", None) or ""
+    if len(iban) < _IBAN_LAST4_LEN:
+        # Too short to be an IBAN: echoing it would neither help nor be
+        # honest about being a last-four.
+        return _ACCOUNT_REF_UNKNOWN
+    return f"…{iban[-_IBAN_LAST4_LEN:]}"
+
+
 class _ExtendedFinTSClient(FinTS3PinTanClient):
     """python-fints subclass that returns the full HISAL segment from get_balance.
 
@@ -357,12 +381,15 @@ class FinTsAtruviaClient:
         if isinstance(segment, NeedTANResponse):
             raise TanRequiredError(segment)
         if segment is None:
-            msg = f"No balance data returned for account {account.iban}"
+            msg = f"No balance data returned for account {_account_ref(account)}"
             raise ValueError(msg)
 
         balance = _balance_to_signed_decimal(getattr(segment, "balance_booked", None))
         if balance is None:
-            msg = f"No booked balance in HISAL response for account {account.iban}"
+            msg = (
+                "No booked balance in HISAL response for account "
+                f"{_account_ref(account)}"
+            )
             raise ValueError(msg)
 
         balance_pending = _balance_to_signed_decimal(

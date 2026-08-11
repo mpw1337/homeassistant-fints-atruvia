@@ -147,6 +147,23 @@ async def test_no_lost_events_when_later_account_fails(hass):
     assert events[0].data["transaction_hash"] == _transaction_hash(new_txn)
 
 
+async def test_missing_account_warning_masks_the_iban(hass, caplog):
+    """A selected IBAN missing at the bank is logged at WARNING — masked only."""
+    coordinator = _make_coordinator(hass, [_IBAN1])
+    coordinator._seen_initialised = True
+    coordinator._client.get_accounts.return_value = []
+
+    result = await coordinator._async_update_data()
+
+    assert result == {}
+    assert "not found at bank" in caplog.text
+    # Full IBAN must not appear anywhere in the log record.
+    assert _IBAN1 not in caplog.text
+    assert "5010517540732" not in caplog.text
+    # ...but the operator still has to be able to tell which account it was.
+    assert _IBAN1[-4:] in caplog.text
+
+
 async def test_async_shutdown_wipes_pin_closes_client_and_calls_super(hass):
     """Fix 3: async_shutdown must wipe the PIN, close the client, and call super()."""
     coordinator = _make_coordinator(hass, [_IBAN1])

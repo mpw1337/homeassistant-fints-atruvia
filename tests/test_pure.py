@@ -5,12 +5,14 @@ from __future__ import annotations
 import hashlib
 import hmac
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 from cryptography.fernet import Fernet
 from fints.models import SEPAAccount
 
 from custom_components.fints_atruvia import _entry_unique_id, iban_unique_id
+from custom_components.fints_atruvia.api import FinTsAtruviaClient
 from custom_components.fints_atruvia.config_flow import (
     _account_labels,
     _validate_https_url,
@@ -59,6 +61,64 @@ def test_sensor_mask_iban_replaces_middle_with_stars():
     assert "BUKB" not in masked
     # The full account number must never appear.
     assert "20201555555555" not in masked
+
+
+# ---------------------------------------------------------------------------
+# api.py exception messages
+# ---------------------------------------------------------------------------
+
+
+def _client_returning_balance_segment(segment: object) -> FinTsAtruviaClient:
+    """Build a FinTS wrapper whose bank dialog yields *segment* for get_balance."""
+    client = FinTsAtruviaClient(
+        blz="12345678",
+        login="123456789",
+        pin_provider=lambda: "0000",
+        url="https://example.test/fints",
+    )
+    # Pre-seed the private client so _get_client() never opens a real dialog.
+    client._client = SimpleNamespace(get_balance=lambda _account: segment)
+    return client
+
+
+def test_get_balance_missing_segment_error_hides_the_full_iban():
+    # The ValueError text reaches home-assistant.log via HA's own
+    # exception-chain logging, so it may only carry the last four digits.
+    iban = "GB33BUKB20201555555555"
+    client = _client_returning_balance_segment(None)
+
+    with pytest.raises(ValueError, match="No balance data returned") as excinfo:
+        client.get_balance(_account(iban))
+
+    assert iban not in str(excinfo.value)
+    assert "BUKB20201555555555" not in str(excinfo.value)
+    assert "5555" in str(excinfo.value)
+
+
+def test_get_balance_missing_booked_balance_error_hides_the_full_iban():
+    iban = "GB33BUKB20201555555555"
+    client = _client_returning_balance_segment(SimpleNamespace(balance_booked=None))
+
+    with pytest.raises(ValueError, match="No booked balance") as excinfo:
+        client.get_balance(_account(iban))
+
+    assert "booked balance" in str(excinfo.value)
+    assert iban not in str(excinfo.value)
+    assert "BUKB20201555555555" not in str(excinfo.value)
+    assert "5555" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("iban", ["", "DE", "abc"])
+def test_get_balance_error_short_iban_is_not_echoed_back(iban):
+    # Defensive: a garbage/truncated IBAN must neither crash nor be echoed as
+    # if its tail were a real last4.
+    client = _client_returning_balance_segment(None)
+
+    with pytest.raises(ValueError, match="No balance data returned") as excinfo:
+        client.get_balance(_account(iban))
+
+    message = str(excinfo.value)
+    assert iban == "" or iban not in message
 
 
 # ---------------------------------------------------------------------------

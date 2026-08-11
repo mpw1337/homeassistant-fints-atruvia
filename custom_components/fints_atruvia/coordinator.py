@@ -292,7 +292,13 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
             for iban in self._selected_accounts:
                 account = next((a for a in accounts if a.iban == iban), None)
                 if account is None:
-                    _LOGGER.warning("Account %s not found at bank, skipping", iban)
+                    # Masked: this fires at WARNING (default log level) for a
+                    # perfectly ordinary cause — a closed or renumbered
+                    # account — so the full IBAN must not land in the log.
+                    _LOGGER.warning(
+                        "Account %s not found at bank, skipping",
+                        _mask_iban_for_event(iban),
+                    )
                     continue
 
                 balance_data = await self.hass.async_add_executor_job(
