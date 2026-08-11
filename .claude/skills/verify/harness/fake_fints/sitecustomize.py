@@ -15,6 +15,7 @@ Environment:
                           D/extra1, D/extra2  extra bookings -> new-txn events
                           D/xss               hostile purpose/creditor text
                           D/tanmode           bank demands SCA on every call
+                          D/tanmode2          SCA for the *second* account only
   FAKE_FINTS_TAN=1      same as the tanmode flag, from startup
 """
 import datetime
@@ -38,6 +39,20 @@ def _flag(name):
 
 def _tan_mode():
     return os.environ.get("FAKE_FINTS_TAN") == "1" or _flag("tanmode")
+
+
+def _tan_mode_for(account):
+    """SCA decision for one account.
+
+    ``tanmode`` fails every call. ``tanmode2`` fails only IBAN2, which is the
+    only way to make a multi-account poll fail *after* the first account was
+    already processed — needed to verify that the coordinator does not commit
+    seen-transaction hashes for accounts handled earlier in a poll that then
+    aborts.
+    """
+    if _tan_mode():
+        return True
+    return _flag("tanmode2") and getattr(account, "iban", None) == IBAN2
 
 
 def _log(line):
@@ -176,10 +191,10 @@ class FakeFinTS3PinTanClient:
         ]
 
     def get_balance(self, account):
-        return self._need_tan() if _tan_mode() else _Hisal()
+        return self._need_tan() if _tan_mode_for(account) else _Hisal()
 
     def get_transactions(self, account, start_date=None, end_date=None):
-        return self._need_tan() if _tan_mode() else _transactions()
+        return self._need_tan() if _tan_mode_for(account) else _transactions()
 
 
 if _fc is not None and os.environ.get("FAKE_FINTS") == "1":

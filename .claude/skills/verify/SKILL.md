@@ -72,6 +72,7 @@ next poll, no restart:
 | `extra1`, `extra2` | extra bookings → new-transaction events |
 | `xss` | hostile `purpose`/`creditor` (`<img onerror>`, `<script>`) |
 | `tanmode` | bank demands SCA on every call → TAN / re-auth path |
+| `tanmode2` | SCA for the second account (`DE02…2051`) only → lets a multi-account poll fail *after* the first account was processed |
 
 `$SB_ROOT/fakebank.log` records each connect (`pin_len`, `restored_state`) and
 `SEND_TAN`.
