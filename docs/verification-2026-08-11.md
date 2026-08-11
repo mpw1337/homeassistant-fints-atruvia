@@ -413,7 +413,9 @@ the rendered flow forms (`config_flow`, including `_account_labels`, whose
 
 ### 1. The plaintext IBAN reaches the recorder database via the unique-ID migration
 
-**Severity:** medium (privacy claim not fully met) · **Status:** open — not fixed in this round
+**Severity:** medium (privacy claim not fully met) · **Status:** documentation
+corrected (`6a13e74`) — the underlying behaviour remains open and is not
+fixable by the integration; see the update below
 
 `_async_migrate_unique_ids` goes through `er.async_migrate_entries`, and HA
 fires an `entity_registry_updated` event per rewritten row whose `changes`
@@ -468,8 +470,18 @@ elsewhere: narrow that sentence to the active `unique_id` field and record the
 migration-event residue as a second `Restrisiko` next to the existing
 `previous_unique_id` one, optionally with a recorder-purge recommendation.
 Adding a note *beside* the sentence would leave an unretracted false claim in
-the shipped security documentation. Not done here by design — this report's
-author is the verifier, and `SECURITY.md` is outside this task's scope.
+the shipped security documentation.
+
+**Update (final review, `6a13e74`):** done as proposed. `SECURITY.md:62` now
+narrows the claim to the active `unique_id` field and records this
+migration-event residue as a second `Restrisiko`, with the recorder-purge
+window and the backup caveat. That closes the *documentation* gap — the
+sentence this finding falsified no longer makes the false claim. It does not
+and cannot close the *behaviour*: HA still fires `entity_registry_updated`
+with the old value on migration, and the recorder still persists it until
+`purge_keep_days` elapses; the integration has no hook to suppress either.
+That part of the finding stays open as a product limitation, tracked in
+`SECURITY.md:62` rather than as an unfinished to-do here.
 
 ### 2. Adding an account to an existing entry replays its whole 30-day history as events
 
@@ -510,8 +522,8 @@ sentence in the event documentation rather than a code change.
 
 ### 4. The "served over the WebSocket API" claim is wrong on 2026.3.2, in four places
 
-**Severity:** trivial (documentation) · **Status:** partly corrected — three
-places still carry it
+**Severity:** trivial (documentation) · **Status:** corrected — all four
+places now carry the at-rest framing instead
 
 Both claims were checked against the installed HA 2026.3.2 source:
 
@@ -527,19 +539,24 @@ Both claims were checked against the installed HA 2026.3.2 source:
   `custom_integration_behavior=ReportBehavior.IGNORE` and carries the upstream
   comment "It is not planned to enforce this for custom integrations."
 
-The WebSocket-API half travelled beyond that report. It is corrected in
-`verification-2026-08-10.md` by this round's amendment, but the same claim is
-still asserted in three places that are outside this task's scope to edit:
+The WebSocket-API half travelled beyond that report. It was corrected in
+`verification-2026-08-10.md` by this round's amendment, and the three
+code/doc locations below — outside this task's scope to edit at the time —
+have since all been narrowed too, in two rounds:
 
-| location | wording to narrow |
+| location | state |
 |---|---|
-| `SECURITY.md:88` (§8) | "…landete und über die Config-Entries-WebSocket-API ausgeliefert wurde" |
-| `custom_components/fints_atruvia/__init__.py:89-90` (`_entry_unique_id` docstring) | "``unique_id`` lands in ``.storage/core.config_entries`` and is served over the config-entries WebSocket API" |
-| `custom_components/fints_atruvia/__init__.py:239` (`async_migrate_entry` docstring) | "…and is served over the config-entries WebSocket API." |
+| `SECURITY.md:88` (§8) | corrected (`6a13e74`) |
+| `custom_components/fints_atruvia/__init__.py:89-101` (`_entry_unique_id` docstring) | corrected (`6a13e74`) |
+| `custom_components/fints_atruvia/__init__.py:243-244` (`async_migrate_entry` docstring) | corrected (final-review fix wave) |
 
-All three should be narrowed to the at-rest exposure (storage file, backups,
-diagnostics), which is what actually motivates the HMAC. None of them changes
-the fix; all three would mislead the next reader.
+`6a13e74` missed the third row; the final whole-branch review caught it
+(alongside a fourth location this finding never listed, `CHANGELOG.md:29`,
+which named a WebSocket command — `config/config_entries/get` — that does not
+exist either) and both were fixed together. All are now narrowed to the
+at-rest exposure (storage file, backups, diagnostics), which is what actually
+motivates the HMAC. None of this changed the fix itself; the false framing
+would only have misled the next reader.
 
 ### 5. Harness gaps found while probing (harness only, no production impact)
 

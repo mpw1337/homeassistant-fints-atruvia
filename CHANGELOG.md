@@ -20,17 +20,25 @@ löst dabei pro betroffener Entity ein `entity_registry_updated`-Event mit der
 Klartext-IBAN im `changes`-Payload aus — das landet über den Recorder auch in
 `home-assistant_v2.db`, bis das Standard-Purge-Fenster (`purge_keep_days: 10`)
 es entfernt. Nicht durch die Integration unterdrückbar, da HA das Event
-selbst feuert. Siehe `SECURITY.md` §5.
+selbst feuert. Siehe `SECURITY.md` §5. Downgrade auf v0.4.0: kein
+Hard-Failure — die Entry bleibt bei `version = 3` und das Setup läuft durch,
+da v0.4.0s `async_migrate_entry` nur `version == 1` behandelt und sonst
+`True` zurückgibt. Einziger Effekt: v0.4.0 berechnet `unique_id` wieder als
+`"{blz}_{username}"` und kann den HMAC nicht mehr reproduzieren, sodass
+`_abort_if_unique_id_configured` die Bank nicht mehr wiedererkennt — ein
+erneutes Hinzufügen legt eine zweite Config-Entry mit eigenem
+Credential-Blob an, statt die bestehende zu deduplizieren.
 
 ### Sicherheit
 
 - Der `unique_id` der Config-Entry enthielt BLZ und Login zunächst im
-  Klartext, dann als unsalted Hash in `.storage/core.config_entries` und
-  wurde über die `config/config_entries/get`-WebSocket-API ausgeliefert.
-  Ersetzt durch einen mit dem Master-Fernet-Key **HMAC-SHA256**-geschlüsselten
-  Hash; Config-Flow ist jetzt bei `VERSION = 3`, mit einer v2→v3-Migration,
-  die fail-open auf die alte `unique_id` zurückfällt, falls die Anmeldedaten
-  nicht entschlüsselt werden können.
+  Klartext, dann als unsalted Hash — beides landete in
+  `.storage/core.config_entries` und damit in jedem unverschlüsselten Backup
+  und Diagnose-Download dieser Datei. Ersetzt durch einen mit dem
+  Master-Fernet-Key **HMAC-SHA256**-geschlüsselten Hash; Config-Flow ist
+  jetzt bei `VERSION = 3`, mit einer v2→v3-Migration, die fail-open auf die
+  alte `unique_id` zurückfällt, falls die Anmeldedaten nicht entschlüsselt
+  werden können.
 - Die Lovelace-Karte interpolierte den konfigurierten `title:` sowie die
   bankseitig gelieferten letzten vier IBAN-Ziffern per `escapeHtml()` in das
   `header="..."`-Attribut der Karte — `escapeHtml()` escaped aber keine
@@ -58,8 +66,11 @@ selbst feuert. Siehe `SECURITY.md` §5.
   nach einem vollständig erfolgreichen Poll-Durchlauf gemerged.
 - `async_shutdown` im Coordinator rief `super().async_shutdown()` nicht auf,
   wodurch HAs eigene Abmeldung von geplanten Refreshs nie lief.
-- `config_entry` wurde nicht an `DataUpdateCoordinator.__init__` durchgereicht
-  (laut HA als Fallback mit `breaks_in_ha_version: "2026.8"` markiert).
+- `config_entry` wurde nicht an `DataUpdateCoordinator.__init__` durchgereicht.
+  HA markiert den fehlenden Parameter intern mit `breaks_in_ha_version:
+  "2026.8"`, plant laut Code-Kommentar aber keine Durchsetzung für
+  Custom-Integrations — trotzdem korrigiert, statt sich auf den Fallback zu
+  verlassen.
 - `FintsStateStore` konnte eine echte v1-Plaintext-State-Datei aus der Zeit
   vor der Fernet-Verschlüsselung nicht mehr laden — HAs Standard-Storage
   bricht die Migration ohne eigenen `_async_migrate_func` mit

@@ -239,9 +239,9 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                  keeps only a ``credential_id`` reference.
     v3:          ``unique_id`` is a keyed HMAC over blz+username
                  (``_entry_unique_id``) instead of the cleartext
-                 ``"{blz}_{username}"`` — that string lands in
-                 ``.storage/core.config_entries`` and is served over the
-                 config-entries WebSocket API.
+                 ``"{blz}_{username}"`` — see ``_entry_unique_id`` for why its
+                 at-rest exposure in ``.storage/core.config_entries`` alone is
+                 reason enough to hash it.
 
     Idempotent: if a credential_id already exists (partial v1→v2 retry), we
     reuse it instead of orphaning the previously encrypted blob. We also
