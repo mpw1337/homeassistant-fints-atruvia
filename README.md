@@ -150,8 +150,14 @@ PIN unverschlüsselt über das Netz schicken und wird abgelehnt.
 
 Sensor-Attribute und `fints_atruvia_new_transaction`-Events enthalten die IBAN
 **maskiert** (`DE51 **** **** **** 3922`) bzw. nur die letzten 4 Stellen.
-Dies hält die volle IBAN aus dem HA-State-Recorder (`home-assistant_v2.db`),
-dem Event-Bus und der UI-History fern.
+Dies hält die volle IBAN aus allen Zuständen und Events, die die Integration
+selbst schreibt, und damit aus dem HA-State-Recorder
+(`home-assistant_v2.db`), dem Event-Bus und der UI-History fern. Eine Ausnahme
+gibt es nur beim **Update** von einer Version mit noch ungehashten
+Entity-`unique_id`s: dabei feuert HA selbst ein
+`entity_registry_updated`-Event mit der Klartext-IBAN, das der Recorder
+mitschreibt — Neuinstallationen sind nicht betroffen, Details und
+Purge-Fenster stehen in `SECURITY.md` §5.
 
 ### Re-Authentifizierung
 

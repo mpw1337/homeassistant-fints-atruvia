@@ -29,8 +29,10 @@ def _mask_iban(iban: str) -> str:
 
     Example: ``GB33BUKB20201555555555`` -> ``GB33 **** **** **** **** 5555``.
     Sensor attributes are recorded in the HA SQLite history and visible to
-    anyone with state read access. Masking by default keeps the full
-    account number out of long-term storage and the event bus.
+    anyone with state read access. Masking by default keeps the full account
+    number out of that recorded history and out of the ``state_changed`` events
+    carrying these attributes. It does not cover the legacy ``unique_id`` that
+    HA's own entity-registry migration event carries — see ``SECURITY.md`` §5.
     """
     if not iban or len(iban) < _IBAN_MIN_MASKABLE_LEN:
         return iban
