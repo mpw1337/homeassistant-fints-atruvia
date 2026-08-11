@@ -86,15 +86,20 @@ def _entry_unique_id(key: bytes, blz: str, username: str) -> str:
     """
     Return an identifier that dedupes entries without storing the login.
 
-    ``unique_id`` lands in ``.storage/core.config_entries`` and is served over
-    the config-entries WebSocket API, so the bank login must not appear in it —
-    not even in a form that can be recovered. A plain digest would not be
-    enough: the BLZ sits in cleartext in ``entry.data`` in that same file and
-    NetKey logins are short numeric customer IDs, so an unkeyed hash of
-    blz+login is brute-forceable offline in minutes by anyone who reads the
-    file. Hence HMAC-SHA256 under *key* — the install's master Fernet key from
-    :func:`.storage.async_get_master_key`, which never leaves ``.storage`` and
-    is not part of the exposed entry data.
+    ``unique_id`` lands in ``.storage/core.config_entries``, and therefore in
+    every unencrypted backup and diagnostics dump of that file, so the bank
+    login must not appear in it — not even in a form that can be recovered.
+    A plain digest would not be enough: the BLZ sits in cleartext in
+    ``entry.data`` in that same file and NetKey logins are short numeric
+    customer IDs, so an unkeyed hash of blz+login is brute-forceable offline
+    in minutes by anyone who reads the file. Hence HMAC-SHA256 under *key* —
+    the install's master Fernet key from
+    :func:`.storage.async_get_master_key`, which never leaves ``.storage``
+    and is not part of the exposed entry data. (On HA 2026.3.2,
+    ``ConfigEntry.as_json_fragment`` doesn't include ``unique_id`` either, so
+    the config-entries WebSocket API doesn't serve it today — but that's an
+    observation about this HA version, not something this relies on; the
+    at-rest exposure above is reason enough on its own.)
 
     ``entry_unique_id|`` is a domain-separation prefix so this keyed use of the
     master key cannot interact with any other one added later.

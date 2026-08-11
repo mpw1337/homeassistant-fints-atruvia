@@ -14,7 +14,13 @@ anschließenden Code-Review-Durchgangs (`docs/verification-2026-08-10.md`).
 v1 über v2 nach v3 migriert — kein manueller Schritt nötig. HA-Backups, die
 *vor* der v1→v2-Migration angelegt wurden, enthalten weiterhin den
 Klartext-PIN und sollten gelöscht oder neu (mit Backup-Passwort) erzeugt
-werden. Siehe `SECURITY.md` §8.
+werden. Siehe `SECURITY.md` §8. Bekannte Einschränkung dieser Migration: Wer
+von einer Version mit noch nicht gehashten Entity-`unique_id`s aktualisiert,
+löst dabei pro betroffener Entity ein `entity_registry_updated`-Event mit der
+Klartext-IBAN im `changes`-Payload aus — das landet über den Recorder auch in
+`home-assistant_v2.db`, bis das Standard-Purge-Fenster (`purge_keep_days: 10`)
+es entfernt. Nicht durch die Integration unterdrückbar, da HA das Event
+selbst feuert. Siehe `SECURITY.md` §5.
 
 ### Sicherheit
 
