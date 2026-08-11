@@ -71,6 +71,12 @@ werden. Siehe `SECURITY.md` §8.
   sortiert.
 - Die Karte ignorierte die `title:`-Konfigurationsoption und zeigte immer den
   Entity-Friendly-Name als Überschrift.
+- Ein expandierter Transaktionen-Bereich in der Karte klappte bei jedem
+  Sensor-Update im Haushalt wieder zusammen, weil der `hass`-Setter bei jedem
+  Aufruf `shadowRoot.innerHTML` neu schrieb, auch wenn die betroffene Änderung
+  gar nicht diese Karte betraf. `_render()` vergleicht die generierte HTML
+  jetzt mit der zuletzt geschriebenen und überspringt den Write, wenn sich
+  nichts geändert hat.
 
 ### Hinzugefügt
 

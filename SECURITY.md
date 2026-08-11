@@ -66,7 +66,7 @@ Alte (v1) Plaintext-Hex-Blobs werden einmalig beim Laden gelesen und beim nächs
 
 Standardmäßig werden Bank-kontrollierte Textfelder (`purpose`, `applicant_name` / `creditor`) **nicht** im Event-Bus und **nicht** in den Sensor-`extra_state_attributes` exponiert. Das verhindert, dass sensitive Buchungstexte (medizinische Empfänger, politische Spenden, etc.) in der HA-Historie landen oder über `/api/states/*` für alle HA-User mit Lesezugriff sichtbar sind.
 
-Aktivieren in HA: **Einstellungen → Geräte & Dienste → FinTS Atruvia → Konfigurieren → „Verwendungszweck und Empfängername exponieren"**. Die Option ist pro Config-Entry (also pro Bankkonto-Zugang) wählbar, ein Toggle nur für die Karte ohne Event-Bus-Exposition existiert bewusst nicht — beide Kanäle nutzen denselben Schalter, damit kein versehentliches asymmetrisches Setup entsteht.
+Aktivieren in HA: **Einstellungen → Geräte & Dienste → FinTS Atruvia → Konfigurieren → „Verwendungszweck und Empfängername exponieren"**. Die Option ist pro Config-Entry (also pro Bankkonto-Zugang) wählbar, ein Toggle nur für die Karte ohne Event-Bus-Exposition existiert bewusst nicht — beide Kanäle nutzen denselben Schalter, damit kein versehentliches asymmetrisches Setup entsteht. Ein Options-Update-Listener lädt die Config-Entry beim Umschalten automatisch neu, sodass die Änderung sofort statt erst beim nächsten 6-Stunden-Poll wirkt.
 
 Die Lovelace-Karte erkennt automatisch, ob das Attribut `transactions` verfügbar ist, und zeigt bei Opt-out den Hinweis *„Transaktionsdetails deaktiviert (in Integrations-Optionen aktivierbar)"*.
 
