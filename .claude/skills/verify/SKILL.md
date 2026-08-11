@@ -73,6 +73,8 @@ next poll, no restart:
 | `xss` | hostile `purpose`/`creditor` (`<img onerror>`, `<script>`) |
 | `tanmode` | bank demands SCA on every call → TAN / re-auth path |
 | `tanmode2` | SCA for the second account (`DE02…2051`) only → lets a multi-account poll fail *after* the first account was processed |
+| `nohisal` | `get_balance` answers without a HISAL segment → `ValueError("No balance data returned for account …")` in `api.py` |
+| `nobooked` | HISAL present but without a booked balance → `ValueError("No booked balance in HISAL response for account …")` |
 
 `$SB_ROOT/fakebank.log` records each connect (`pin_len`, `restored_state`) and
 `SEND_TAN`.
@@ -105,7 +107,15 @@ next poll, no restart:
   `setup_error` + a `reauth_confirm` flow; completing it must reuse the same
   `credential_id`.
 - **Log hygiene** — grep `$SB_ROOT/ha.log` for the PIN, IBAN, account number
-  and username: all must be 0 hits (the component logs at DEBUG here).
+  and username: all must be 0 hits (the component logs at DEBUG here). Two
+  IBAN-bearing paths need forcing: the coordinator's "account not found at
+  bank" **WARNING** wants an IBAN in `selected_accounts` that the fake does not
+  offer (edit `.storage/core.config_entries`, restart), and `api.py`'s two
+  `ValueError`s want `nohisal` / `nobooked`. HA formats the latter's
+  `__cause__` chain at DEBUG on *two* loggers —
+  `helpers/update_coordinator.py` on a poll and `config_entries.py` on the
+  setup-time first refresh — so exercise the flag both with HA running and
+  across a restart.
 
 ## Card (browser)
 

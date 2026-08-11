@@ -16,6 +16,8 @@ Environment:
                           D/xss               hostile purpose/creditor text
                           D/tanmode           bank demands SCA on every call
                           D/tanmode2          SCA for the *second* account only
+                          D/nohisal           get_balance answers without a HISAL
+                          D/nobooked          HISAL without a booked balance
   FAKE_FINTS_TAN=1      same as the tanmode flag, from startup
 """
 import datetime
@@ -191,7 +193,21 @@ class FakeFinTS3PinTanClient:
         ]
 
     def get_balance(self, account):
-        return self._need_tan() if _tan_mode_for(account) else _Hisal()
+        """Answer a balance query, or one of the two shapes api.py rejects.
+
+        ``nohisal`` drops the HISAL segment entirely and ``nobooked`` keeps it
+        but without a booked balance — the two cases behind the ValueErrors in
+        ``FinTsAtruviaClient.get_balance``, which are otherwise unreachable
+        from the outside.
+        """
+        if _tan_mode_for(account):
+            return self._need_tan()
+        if _flag("nohisal"):
+            return None
+        hisal = _Hisal()
+        if _flag("nobooked"):
+            hisal.balance_booked = None
+        return hisal
 
     def get_transactions(self, account, start_date=None, end_date=None):
         return self._need_tan() if _tan_mode_for(account) else _transactions()
