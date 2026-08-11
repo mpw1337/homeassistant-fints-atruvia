@@ -53,6 +53,23 @@ Credential-Blob an, statt die bestehende zu deduplizieren.
   sichtbaren BLZ die volle IBAN rekonstruierbar machte. Label zeigt jetzt nur
   `Konto …{last4}`, mit einer nicht-identifizierenden laufenden Nummer nur
   bei doppelten letzten vier Ziffern.
+- An zwei Stellen schrieb die Integration die volle IBAN in Text, der in
+  `home-assistant.log` landet — entgegen der Regel, dass IBANs an jeder
+  externen Grenze maskiert werden (`SECURITY.md` §5/§10). Erstens die
+  Coordinator-Warnung „Account … not found at bank“: die feuert auf
+  **WARNING**, also im Standard-Loglevel und ohne jede Fehlerbedingung, sobald
+  ein ausgewähltes Konto in der Kontoliste der Bank fehlt (etwa nach einer
+  Kontoschließung oder -umnummerierung). Zweitens die beiden `ValueError`s
+  beim Abruf des Kontostands, die das Konto per voller IBAN benannten: der
+  Coordinator loggt selbst nur den Exception-Typ, HA formatiert die
+  `__cause__`-Kette danach aber auf zwei eigenen Loggern auf **DEBUG** —
+  genau in dem Log, das man über „Debug-Protokollierung aktivieren“ einsammelt
+  und in ein öffentliches Issue kopiert. Beide Stellen maskieren jetzt
+  (`DE89**…**3000` bzw. `…3000`). Kein remote auslösbares Problem, sondern
+  eine lokale Offenlegung gegenüber jedem, der das Logfile lesen oder
+  weitergeben kann; beide Stellen existierten bereits vor v0.4.0. Zur
+  Laufzeit gegen ein echtes Home Assistant nachgeprüft, beide Pfade erzwungen
+  — siehe `docs/verification-2026-08-11.md`, Abschnitt „Follow-up“.
 
 ### Behoben
 

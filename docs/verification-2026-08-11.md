@@ -620,3 +620,148 @@ would only have misled the next reader.
   `uvx ruff@0.16.2 check .` → `All checks passed!`,
   `uvx ruff@0.16.2 format --check .` → `17 files already formatted`,
   `PYTHONPATH=$PWD .venv/bin/pytest -q` → `68 passed`.
+
+---
+
+## Follow-up 2026-08-11, later: log hygiene re-checked for `28264f3`
+
+This is a **targeted re-check, not a second full run.** After the round above
+was written, one more code change landed —
+`28264f3 fix(log): stop writing full IBANs into the log and exception messages`
+— which touches two sites that the "Extra checks, 4" sweep could not have
+covered, because neither path was executed anywhere in that run:
+
+- `coordinator.py`, the `Account %s not found at bank, skipping` **WARNING**
+  (default log level), now masked via `_mask_iban_for_event`.
+- `api.py`, the two `ValueError`s in `get_balance`, now naming the account as
+  `…{last4}` via a new local `_account_ref`. Home Assistant formats their
+  `__cause__` chain at `DEBUG` on two of its own loggers.
+
+Six unit tests assert the absence of the full IBAN in `caplog` and in
+`str(exc)`. What they cannot show is what HA itself writes, so both paths were
+forced inside a running instance. Nothing else from this document was re-run;
+the browser half, the other seven findings and the deferred Minors were not
+touched.
+
+**Method.** Same harness, but a **separate, freshly created sandbox** under
+`SB_ROOT=/tmp/fints-verify-reverify` (its `extra/` symlinked to the previous
+one's, so no re-bootstrap) — deliberately not `/tmp/fints-verify`, whose logs
+are the evidence behind the section above. `run.sh up` wrote the usual **v1**
+entry from scratch; the fake bank was in place for the whole run, no real bank
+was contacted and the developer's `config/` was never read. `configuration.yaml`
+already sets both loggers this needs (`custom_components.fints_atruvia: debug`
+**and** `homeassistant.config_entries: debug`). Reaching the two `api.py`
+branches needed a harness addition: two fake-bank flags, `nohisal` (no HISAL
+segment) and `nobooked` (HISAL without a booked balance), committed separately
+as `c503a55` and documented in `SKILL.md`'s flag table.
+
+### The WARNING path — forced, masked
+
+`selected_accounts` in the migrated entry was extended with an IBAN the fake
+bank does not offer, `DE41500105179876543210`, and HA restarted. It fires on
+the setup-time first refresh:
+
+```
+2026-08-11 15:19:28.598 WARNING (MainThread) [custom_components.fints_atruvia.coordinator] Account DE41**************3210 not found at bank, skipping
+```
+
+and again on a forced poll (`homeassistant/update_entity`) 21 s later:
+
+```
+2026-08-11 15:19:49.455 WARNING (MainThread) [custom_components.fints_atruvia.coordinator] Account DE41**************3210 not found at bank, skipping
+```
+
+**4 occurrences** across the run's two distinct logs, every one of them in the
+masked `DE41**************3210` form and **none** in any other form. The poll
+that produced the second line still ended `success: True` — the missing account
+is skipped, the selected one is unaffected.
+
+### The `api.py` messages — forced on **both** HA logging routes
+
+Both messages were provoked on the poll route (`helpers/update_coordinator.py`,
+logging on the integration's own logger) and on the setup-time first-refresh
+route (`config_entries.py`, logging on `homeassistant.config_entries`):
+
+| message | poll route (`…coordinator` `Full error:`) | setup route (`homeassistant.config_entries` `Full exception`) |
+|---|---|---|
+| `No balance data returned for account …3000` (`nohisal`, `api.py:385`) | `15:20:04.308` | `15:22:06.731`, `15:22:06.783`, `15:22:20.699` (cold start + backoff retries) |
+| `No booked balance in HISAL response for account …3000` (`nobooked`, `api.py:393`) | `15:21:09.600` | `15:21:34.526`, `15:21:43.304`, `15:21:53.672` (entry reload + retries) |
+
+The setup-time route, in full — this is the chain a user collects with "Enable
+debug logging" and pastes into an issue:
+
+```
+2026-08-11 15:21:43.304 INFO  [homeassistant.config_entries] Config entry 'Sandbox Bank' for fints_atruvia integration not ready yet: Error communicating with bank; Retrying in 10 seconds
+2026-08-11 15:21:43.304 DEBUG [homeassistant.config_entries] Full exception
+Traceback (most recent call last):
+  File ".../custom_components/fints_atruvia/coordinator.py", line 304, in _async_update_data
+    balance_data = await self.hass.async_add_executor_job(
+  File ".../custom_components/fints_atruvia/api.py", line 393, in get_balance
+    raise ValueError(msg)
+ValueError: No booked balance in HISAL response for account …3000
+The above exception was the direct cause of the following exception:
+  … UpdateFailed: Error communicating with bank
+The above exception was the direct cause of the following exception:
+  File ".../homeassistant/config_entries.py", line 769, in __async_setup_with_context
+```
+
+Across all four log files, `grep -o "for account [^ ]*"` yields **16 hits, all
+of them `for account …3000`** (8 distinct; `ha.stdout` mirrors `ha.log`) — no
+other account reference form occurs at all. The `Full error:` / `Full
+exception` lines split **4** on `custom_components.fints_atruvia.coordinator`
+and **12** on `homeassistant.config_entries`, i.e. both routes really ran.
+
+One incidental observation: a *repeat* failing poll while the coordinator is
+already in the failed state logs only `FinTS update failed: ValueError` and no
+chain at all — HA's `update_coordinator` suppresses the traceback until the
+next success/failure transition. A healthy poll had to be interleaved to get
+the second message onto the poll route.
+
+After the flags were cleared and the entry reloaded, the sensor recovered to
+`1234.56` with `iban: DE89 **** **** **** **** 3000` and `2fa_pending: false`.
+
+### The sweep
+
+Everything under `SB_ROOT` (`extra/` excluded — that is HA's dependency tree,
+symlinked from the previous sandbox): `ha.log` (27 459 B, the last boot),
+`ha.log.1` (33 738 B, the boot that carries the WARNING and the poll-route
+chains), `ha.log.phaseAB` (a byte-identical copy of `ha.log.1` taken before the
+last restart), `ha.stdout` (27 459 B), `fakebank.log`, the recorder DB
+(`config/home-assistant_v2.db`, 229 376 B) and `.storage/*`. `grep -a` for both
+full IBANs *and* substrings, so a mask hiding only the ends could not pass:
+
+| pattern | HA logs (`ha.log*`, `ha.stdout`) | recorder DB |
+|---|---|---|
+| `DE89370400440532013000` (selected) | 0 | 3 |
+| `DE41500105179876543210` (missing at bank) | 0 | 0 |
+| `DE02120300000000202051` (second account) | 0 | 0 |
+| `3704004405`, `0532013000`, `37040044` (substrings of the first) | 0 | 3 each |
+| `500105179876`, `9876543210`, `5001051798` (substrings of the missing one) | 0 | 0 |
+| `120300000000`, `202051` (substrings of the second) | 0 | 0 |
+| `0000123456` / `0000654321` (account numbers) | 0 | 0 |
+| `SandboxPIN12345` (PIN) | 0 | 0 |
+| `sandboxuser` (login) | 0 | 0 |
+
+The three DB hits are the already-documented ones: exactly the three
+`entity_registry_updated` rows of finding 1 above, `changes.unique_id`
+carrying the legacy `01KSANDBOX000000000000FINT_DE89370400440532013000[…]`.
+`state_attributes.shared_attrs` and `states.state` are at **0**, so no state or
+attribute wrote an IBAN, and the IBAN that this round's WARNING path masked
+produces **no DB row at all** (it never becomes an entity). `sandboxuser`'s 9
+hits are all in `fakebank.log`, the harness's own `CONNECT user=…` line, and
+none in an HA log; `.storage/core.config_entries` holds both IBANs in
+`selected_accounts` and the seen-transaction store is keyed per IBAN — both by
+design, at `0600`, and unchanged by `28264f3`.
+
+**Result: pass.** Both paths executed inside real Home Assistant, both are
+masked, and no full IBAN reaches any HA log on either route. `git diff
+--exit-code -- custom_components frontend` was clean throughout (the only
+changes are this document, `CHANGELOG.md` and the harness flags),
+`uvx ruff@0.16.2 check .` → `All checks passed!`, and
+`PYTHONPATH=$PWD .venv/bin/pytest -q` → `74 passed`.
+
+Still not covered, unchanged from the list at the top: what a real Atruvia
+gateway puts into a `NeedTANResponse` or an error segment. The fake's messages
+are the harness's, so this run shows the integration does not add an IBAN of
+its own — not that python-fints never stringifies bank text (the existing "no
+`_LOGGER.exception` on FinTS paths" convention is what guards that).
