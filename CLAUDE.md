@@ -103,7 +103,7 @@ Atruvia banks require fresh SecureGo+ confirmation roughly every 90 days. Flow:
 
 ### New-transaction events
 
-`fints_atruvia_new_transaction` is fired per detected transaction. Deduplication uses `_transaction_hash` (sha256 of `date|amount|purpose|creditor`) since FinTS/MT940 carries no stable transaction id. Seen hashes are persisted per-IBAN to `.storage/fints_atruvia_seen_transactions_<entry_id>`. **First run after install seeds the set silently** (`_seen_initialised` gate) — never fire events for the historical backfill.
+`fints_atruvia_new_transaction` is fired per detected transaction. Deduplication uses `_transaction_hash` (sha256 of `date|amount|purpose|creditor`) since FinTS/MT940 carries no stable transaction id. Seen hashes are persisted per-IBAN to `.storage/fints_atruvia_seen_transactions_<entry_id>`. **First run after install seeds the set silently** (`_seen_initialised` gate), and the same holds per IBAN: an account polled for the first time (added later via the reauth flow) seeds without events too (`iban in self._seen_hashes` gate) — never fire events for the historical backfill. `_transaction_hash` is deliberately not account-scoped (documented in the README's event section); dedup is safe because the seen-set is keyed per IBAN.
 
 ### Lovelace card (`frontend/`)
 

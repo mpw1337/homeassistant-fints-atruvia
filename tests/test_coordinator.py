@@ -100,6 +100,9 @@ async def test_no_lost_events_when_later_account_fails(hass):
     """Fix 2: seen-hashes must not advance for accounts whose update never completed."""
     coordinator = _make_coordinator(hass, [_IBAN1, _IBAN2])
     coordinator._seen_initialised = True
+    # Both IBANs are already tracked (empty window so far) — an IBAN missing
+    # from the seen-set entirely would seed silently instead of firing.
+    coordinator._seen_hashes = {_IBAN1: set(), _IBAN2: set()}
     coordinator.data = {"prior": "state"}  # simulate a previously successful update
 
     new_txn = {
@@ -144,6 +147,71 @@ async def test_no_lost_events_when_later_account_fails(hass):
     await hass.async_block_till_done()
 
     assert len(events) == 1
+    assert events[0].data["transaction_hash"] == _transaction_hash(new_txn)
+
+
+async def test_newly_added_account_seeds_silently_without_event_flood(hass):
+    """A newly tracked IBAN on an existing entry must not replay its history.
+
+    Verification finding 2 (2026-08-11): once ``_seen_initialised`` is set,
+    an IBAN without a seen-set entry (added via the reauth flow) had every
+    historical booking counted as new — 6 events at once in the repro.
+    """
+    coordinator = _make_coordinator(hass, [_IBAN1, _IBAN2])
+    old_txn = {
+        "date": "2026-07-15",
+        "amount": Decimal("-10.00"),
+        "purpose": "Bekannt",
+        "creditor": "Alt GmbH",
+        "currency": "EUR",
+    }
+    backfill = [
+        {
+            "date": f"2026-07-{day:02d}",
+            "amount": Decimal("-5.00"),
+            "purpose": f"Historisch {day}",
+            "creditor": "Laden",
+            "currency": "EUR",
+        }
+        for day in (20, 21, 22)
+    ]
+    # Entry already initialised, but only IBAN1 has ever been polled.
+    coordinator._seen_initialised = True
+    coordinator._seen_hashes = {_IBAN1: {_transaction_hash(old_txn)}}
+
+    iban2_txns = list(backfill)
+    coordinator._client.get_accounts.return_value = [
+        _account(_IBAN1),
+        _account(_IBAN2),
+    ]
+    coordinator._client.get_balance.return_value = _balance()
+    coordinator._client.get_transactions.side_effect = lambda account, _days: (
+        [old_txn] if account.iban == _IBAN1 else iban2_txns
+    )
+
+    events = async_capture_events(hass, EVENT_NEW_TRANSACTION)
+
+    # First poll with the new account: seed silently, no event flood.
+    await coordinator._async_update_data()
+    await hass.async_block_till_done()
+
+    assert events == []
+    assert coordinator._seen_hashes[_IBAN2] == {_transaction_hash(t) for t in backfill}
+
+    # A genuinely new booking on the new account afterwards must still fire.
+    new_txn = {
+        "date": "2026-08-11",
+        "amount": Decimal("-13.37"),
+        "purpose": "Wirklich neu",
+        "creditor": "Neu GmbH",
+        "currency": "EUR",
+    }
+    iban2_txns.append(new_txn)
+    await coordinator._async_update_data()
+    await hass.async_block_till_done()
+
+    assert len(events) == 1
+    assert events[0].data["iban_last4"] == _IBAN2[-4:]
     assert events[0].data["transaction_hash"] == _transaction_hash(new_txn)
 
 

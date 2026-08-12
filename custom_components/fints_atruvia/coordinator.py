@@ -235,16 +235,17 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
         current_by_hash: dict[str, dict] = {
             _transaction_hash(t): t for t in transactions
         }
-        previous_known = self._seen_hashes.get(iban, set())
-
-        if self._seen_initialised:
-            new_hashes = set(current_by_hash) - previous_known
+        if self._seen_initialised and iban in self._seen_hashes:
+            new_hashes = set(current_by_hash) - self._seen_hashes[iban]
             events = [
                 self._build_event_payload(iban, current_by_hash[h], h)
                 for h in new_hashes
             ]
         else:
-            # First ever run: seed without firing any events.
+            # First ever run, or an IBAN polled for the first time (account
+            # added through the reauth flow): seed without firing any events,
+            # otherwise the whole 30-day history would replay as a flood of
+            # ``fints_atruvia_new_transaction`` events.
             events = []
 
         return events, set(current_by_hash.keys())
