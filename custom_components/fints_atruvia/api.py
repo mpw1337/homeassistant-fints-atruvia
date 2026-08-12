@@ -304,7 +304,7 @@ class FinTsAtruviaClient:
             _LOGGER.debug(
                 "No two-step TAN mechanism negotiable: "
                 "%d allowed security functions, %d supported mechanisms",
-                len(client.allowed_security_functions),
+                len(getattr(client, "allowed_security_functions", ())),
                 len(client.get_tan_mechanisms()),
             )
             raise NoTanMechanismError(_MSG_NO_TAN_MECHANISM)

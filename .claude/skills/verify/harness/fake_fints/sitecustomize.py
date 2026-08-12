@@ -153,7 +153,11 @@ class FakeFinTS3PinTanClient:
     # --- dialog / TAN plumbing ------------------------------------------
     def fetch_tan_mechanisms(self):
         mechs = self.get_tan_mechanisms()
-        # Mirrors fints/client.py: the HITANS parameters populate this list.
+        # Real client: response code 3920 populates allowed_security_functions,
+        # while the BPD's HITANS parameters feed get_tan_mechanisms() (see
+        # fints/client.py _process_response, client.py:1570-1571). We derive
+        # the former from the latter here as a shortcut since our fake BPD
+        # parsing already produces the get_tan_mechanisms() dict.
         self.allowed_security_functions = list(mechs)
         return mechs
 
