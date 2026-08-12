@@ -111,6 +111,12 @@ Credential-Blob an, statt die bestehende zu deduplizieren.
   gar nicht diese Karte betraf. `_render()` vergleicht die generierte HTML
   jetzt mit der zuletzt geschriebenen und überspringt den Write, wenn sich
   nichts geändert hat.
+- Ein nachträglich (über den Reauth-Flow) hinzugefügtes Konto feuerte beim
+  ersten Poll seine komplette 30-Tage-Historie als
+  `fints_atruvia_new_transaction`-Events, weil das „still übernehmen"-Gate
+  nur einmal pro Config-Entry griff statt pro IBAN. Ein erstmals abgefragtes
+  Konto wird jetzt genauso still übernommen wie der allererste Abruf nach
+  der Einrichtung.
 - Bot die Bank kein unterstütztes Zwei-Schritt-TAN-Verfahren an (kein
   Antwortcode 3920, BPD zurückgehalten oder nur nicht unterstützte
   HITANS-Versionen), scheiterte der Config-Flow mit einem rohen `KeyError`
@@ -120,6 +126,11 @@ Credential-Blob an, statt die bestehende zu deduplizieren.
 
 ### Hinzugefügt
 
+- README: eigener Abschnitt zum `fints_atruvia_new_transaction`-Event mit dem
+  Payload, dem Still-Übernehmen-Verhalten und dem Hinweis, dass
+  `transaction_hash` nicht kontenbezogen ist (dieselbe Buchung auf zwei
+  Konten trägt denselben Hash) — kontenübergreifende Deduplizierung in
+  Automatisierungen sollte `iban_last4`/`integration_id` einbeziehen.
 - `translations/en.json` — HA lädt Übersetzungen zur Laufzeit ausschließlich
   aus `translations/<lang>.json` ohne Fallback auf `strings.json`, sodass
   englischsprachige Instanzen bislang rohe Config-/Options-Flow-Keys statt

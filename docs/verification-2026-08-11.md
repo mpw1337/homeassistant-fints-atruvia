@@ -485,7 +485,8 @@ That part of the finding stays open as a product limitation, tracked in
 
 ### 2. Adding an account to an existing entry replays its whole 30-day history as events
 
-**Severity:** low (event flood / spurious automation triggers) · **Status:** open
+**Severity:** low (event flood / spurious automation triggers) · **Status:**
+fixed on `release/v0.5.0` (post-report follow-up) — see the update below
 
 `_seen_initialised` is a single per-entry flag, but `_seen_hashes` is keyed per
 IBAN. Once the flag is set, an IBAN with no entry in the seen-set is treated as
@@ -500,9 +501,31 @@ reauth flow (which is the only way `selected_accounts` can change): **6**
 "first run after install seeds the set silently" guarantee does not extend to
 a newly tracked account on an existing entry.
 
+**Update (post-report follow-up):** fixed. `_detect_new_transactions` now
+gates event emission per IBAN (`iban in self._seen_hashes`) in addition to
+the entry-level `_seen_initialised` flag, so an IBAN polled for the first
+time seeds its seen-set silently — same contract as the very first run.
+Regression test:
+`tests/test_coordinator.py::test_newly_added_account_seeds_silently_without_event_flood`
+(reproduces this finding's setup: entry initialised, second IBAN absent from
+the seen store, three-booking backfill → 0 events; a genuinely new booking
+afterwards → exactly 1 event). Also re-driven through the runtime harness
+against a fresh sandbox: after a healthy seeded poll, the selected IBAN's key
+was dropped from `fints_atruvia_seen_transactions_…` (file kept, so
+`_seen_initialised` stays true) and the entry reloaded inside a 30 s event
+subscription — **0** `fints_atruvia_new_transaction` events (pre-fix: 4, one
+per historical booking), and the store was re-seeded to the same 4 hashes.
+`extra1` on the next forced poll then fired **exactly one** event
+(`iban_last4: "3000"`, amount `-7.35`). No `fints_atruvia` errors in
+`ha.log`.
+
 ### 3. `transaction_hash` is not account-scoped
 
-**Severity:** low (informational) · **Status:** open
+**Severity:** low (informational) · **Status:** documented (post-report
+follow-up) — the README gained a `fints_atruvia_new_transaction` event
+section stating that the hash is not account-scoped and that cross-account
+dedup in automations should include `iban_last4`/`integration_id`. No code
+change, as proposed below.
 
 `_transaction_hash` hashes `date|amount|purpose|creditor` only, so the same
 booking on two accounts produces the same hash. Observed directly — the two

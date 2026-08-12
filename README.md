@@ -81,6 +81,29 @@ Pro konfiguriertem Konto werden folgende Entities erstellt:
 
 ---
 
+## Ereignis `fints_atruvia_new_transaction`
+
+Für jede neu erkannte Buchung feuert die Integration ein Event auf dem
+HA-Event-Bus — nutzbar als Automatisierungs-Trigger (z. B. Push-Benachrichtigung
+bei Gehaltseingang). Das Payload enthält `integration_id`, `iban_masked`,
+`iban_last4`, `date`, `amount`, `currency` und `transaction_hash`;
+`purpose` und `applicant_name` kommen nur dazu, wenn in den
+Integrations-Optionen „vollständige Daten" aktiviert ist.
+
+Hinweise:
+
+- Beim ersten Abruf nach der Einrichtung — und ebenso für ein später neu
+  hinzugefügtes Konto — werden die vorhandenen Buchungen der letzten 30 Tage
+  **still** übernommen; Events feuern nur für Buchungen, die danach neu
+  hinzukommen.
+- `transaction_hash` ist **nicht kontenbezogen**: Er wird aus Datum, Betrag,
+  Verwendungszweck und Gegenpartei gebildet, sodass dieselbe Buchung auf zwei
+  Konten (z. B. eine Umbuchung zwischen eigenen Konten) denselben Hash trägt.
+  Wer in Automatisierungen über Konten hinweg auf `transaction_hash`
+  dedupliziert, sollte `iban_last4` (bzw. `integration_id`) mit einbeziehen.
+
+---
+
 ## 90-Tage Re-Authentifizierung
 
 Atruvia-Banken erfordern alle ~90 Tage eine erneute Bestätigung via SecureGo+:
