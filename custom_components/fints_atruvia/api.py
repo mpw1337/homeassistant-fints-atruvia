@@ -22,6 +22,7 @@ from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 
 from fints.client import FinTS3PinTanClient, NeedTANResponse
+from fints.exceptions import FinTSClientPINError, FinTSClientTemporaryAuthError
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -51,6 +52,15 @@ class InvalidUrlError(ValueError):
 
 class NoTanMechanismError(Exception):
     """Raised when the bank offers no supported two-step TAN mechanism."""
+
+
+class AuthRejectedError(Exception):
+    """Raised when the bank rejects authentication during a FinTS dialog."""
+
+    def __init__(self, codes: tuple[str, ...]) -> None:
+        """Store the bank's numeric response codes for diagnostics."""
+        super().__init__("Bank rejected authentication during dialog initialization")
+        self.codes = codes
 
 
 def _safe_decimal(value: Any) -> Decimal | None:
@@ -150,12 +160,48 @@ class _ExtendedFinTSClient(FinTS3PinTanClient):
     (available amount, pending balance, credit line, etc.). We override it to
     return the raw segment so :class:`FinTsAtruviaClient.get_balance` can read
     the extended fields the bank delivers.
+
+    It also records the numeric response codes seen during dialog
+    bootstrapping (see ``_process_response``) so a rejected authentication
+    can be diagnosed after the fact: the bootstrap dialogs run with
+    ``internal_send=True``, so python-fints itself never logs them, and the
+    static ``FinTSClientPINError`` message that follows a 9xxx code carries
+    no code of its own.
     """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        """Initialise diagnostic attributes before python-fints can touch them.
+
+        These must be instance attributes set before ``super().__init__``
+        runs, since dialog bootstrapping inside the base constructor can
+        already trigger ``_process_response`` calls. A class-attribute list
+        would be shared across instances/clients.
+        """
+        self.observed_error_codes: list[str] = []
+        self.sca_not_required: bool = False
+        super().__init__(*args, **kwargs)
 
     def _get_balance(self, command_seg: Any, response: Any) -> Any:  # type: ignore[override]
         for resp in response.response_segments(command_seg, "HISAL"):
             return resp
         return None
+
+    def _process_response(self, dialog: Any, segment: Any, response: Any) -> None:
+        """Record diagnostic response codes before delegating to python-fints.
+
+        Recording must happen before the ``super()`` call because that call
+        can raise (e.g. ``FinTSClientPINError`` on a 9xxx code) — the codes
+        need to survive the raise so callers can attach them to
+        ``AuthRejectedError``. Only the bare numeric code is kept, never
+        ``response.text`` or the response object itself (log hygiene: HBCI
+        response text can include account numbers).
+        """
+        code = str(response.code)
+        if code.startswith("9"):
+            self.observed_error_codes.append(code)
+        if code == "3076":
+            self.sca_not_required = True
+        super()._process_response(dialog, segment, response)
 
 
 # Fallback product_id: Atruvia sometimes blocks the python-fints default.
@@ -285,54 +331,61 @@ class FinTsAtruviaClient:
         self._client = client
 
         try:
-            client.fetch_tan_mechanisms()
-        except ValueError as exc:
-            _LOGGER.debug(
-                "fetch_tan_mechanisms raised ValueError (expected for SCA banks): %s",
-                exc,
-            )
-
-        # If only the one-step mechanism is selected, upgrade to the first
-        # available two-step mechanism so the signed dialog can perform SCA.
-        if client.get_current_tan_mechanism() in (None, "999"):
-            for sec_func in client.get_tan_mechanisms():
-                if sec_func != "999":
-                    client.set_tan_mechanism(sec_func)
-                    break
-
-        if client.get_current_tan_mechanism() in (None, "999"):
-            _LOGGER.debug(
-                "No two-step TAN mechanism negotiable: "
-                "%d allowed security functions, %d supported mechanisms",
-                len(getattr(client, "allowed_security_functions", ())),
-                len(client.get_tan_mechanisms()),
-            )
-            raise NoTanMechanismError(_MSG_NO_TAN_MECHANISM)
-
-        if client.selected_tan_medium is None and client.is_tan_media_required():
-            _, media = client.get_tan_media()
-            if media:
-                client.set_tan_medium(media[0])
-            else:
-                # Workaround for banks that signal "no medium needed" via
-                # empty list (see minimal_interactive_cli_bootstrap).
-                client.selected_tan_medium = ""
-
-        client.__enter__()
-        keep_open = False
-        try:
-            if client.init_tan_response is not None:
+            try:
+                client.fetch_tan_mechanisms()
+            except ValueError as exc:
                 _LOGGER.debug(
-                    "SCA challenge during system-ID init: %s",
-                    client.init_tan_response,
+                    "fetch_tan_mechanisms raised ValueError "
+                    "(expected for SCA banks): %s",
+                    exc,
                 )
-                keep_open = True
-                return client.init_tan_response
-            self._cached_accounts = client.get_sepa_accounts()
-            return None
-        finally:
-            if not keep_open:
-                self._close_standing_dialog()
+
+            # If only the one-step mechanism is selected, upgrade to the
+            # first available two-step mechanism so the signed dialog can
+            # perform SCA.
+            if client.get_current_tan_mechanism() in (None, "999"):
+                for sec_func in client.get_tan_mechanisms():
+                    if sec_func != "999":
+                        client.set_tan_mechanism(sec_func)
+                        break
+
+            if client.get_current_tan_mechanism() in (None, "999"):
+                _LOGGER.debug(
+                    "No two-step TAN mechanism negotiable: "
+                    "%d allowed security functions, %d supported mechanisms",
+                    len(getattr(client, "allowed_security_functions", ())),
+                    len(client.get_tan_mechanisms()),
+                )
+                raise NoTanMechanismError(_MSG_NO_TAN_MECHANISM)
+
+            if client.selected_tan_medium is None and client.is_tan_media_required():
+                _, media = client.get_tan_media()
+                if media:
+                    client.set_tan_medium(media[0])
+                else:
+                    # Workaround for banks that signal "no medium needed" via
+                    # empty list (see minimal_interactive_cli_bootstrap).
+                    client.selected_tan_medium = ""
+
+            client.__enter__()
+            keep_open = False
+            try:
+                if client.init_tan_response is not None:
+                    _LOGGER.debug(
+                        "SCA challenge during system-ID init: %s",
+                        client.init_tan_response,
+                    )
+                    keep_open = True
+                    return client.init_tan_response
+                self._cached_accounts = client.get_sepa_accounts()
+                return None
+            finally:
+                if not keep_open:
+                    self._close_standing_dialog()
+        except (FinTSClientPINError, FinTSClientTemporaryAuthError) as exc:
+            raise AuthRejectedError(
+                codes=tuple(getattr(client, "observed_error_codes", ()))
+            ) from exc
 
     def _close_standing_dialog(self) -> None:
         """Close the client's standing dialog if one is open."""
@@ -359,12 +412,18 @@ class FinTsAtruviaClient:
         """
         client = self._get_client()
         try:
-            client.send_tan(tan_response, tan)
-            # After SCA, system-ID is assigned. Cache accounts while the
-            # dialog is still open so the next caller does not re-open one.
-            self._cached_accounts = client.get_sepa_accounts()
-        finally:
-            self._close_standing_dialog()
+            try:
+                client.send_tan(tan_response, tan)
+                # After SCA, system-ID is assigned. Cache accounts while the
+                # dialog is still open so the next caller does not re-open
+                # one.
+                self._cached_accounts = client.get_sepa_accounts()
+            finally:
+                self._close_standing_dialog()
+        except (FinTSClientPINError, FinTSClientTemporaryAuthError) as exc:
+            raise AuthRejectedError(
+                codes=tuple(getattr(client, "observed_error_codes", ()))
+            ) from exc
 
     def get_accounts(self) -> list[SEPAAccount]:
         """Return all SEPA accounts accessible with the configured credentials.
