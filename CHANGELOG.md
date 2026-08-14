@@ -4,6 +4,49 @@ Alle nennenswerten Änderungen an diesem Projekt werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/);
 Einträge sind deutsch, konsistent mit `README.md` / `SECURITY.md`.
 
+## [0.6.0] - 2026-08-14
+
+Diagnose- und Robustheits-Runde für den Config-Flow, ausgelöst durch einen
+realen Fehlversuch beim Einrichten eines zweiten Kontos: Die Bank lehnte die
+Anmeldung ab, die Integration zeigte aber nur „Verbindung fehlgeschlagen“
+und der eigentliche FinTS-Antwortcode war nirgends sichtbar.
+
+### Behoben
+
+- Lehnt die Bank die Anmeldung ab (`FinTSClientPINError` /
+  `FinTSClientTemporaryAuthError` aus python-fints), zeigt der Config-Flow
+  jetzt einen eigenen Fehler „Die Bank hat die Anmeldung abgelehnt …“
+  (`invalid_auth`) statt des irreführenden `cannot_connect`, inklusive
+  Hinweis auf mögliche Zugangs-Sperrung nach mehreren Fehlversuchen. Gilt
+  auch für den 2FA-Schritt und den Reauth-Flow.
+- Die nackten FinTS-Antwortcodes (z. B. `9942`) werden dafür jetzt in der
+  Client-Erweiterung mitgeschnitten und log-hygienisch ausgegeben
+  (`bank rejected authentication (codes: 9942)`) — nur der numerische Code,
+  nie Bank-Text. Bisher waren die Codes komplett unsichtbar, weil
+  python-fints die still verarbeiteten Bootstrap-Dialoge nicht loggt und der
+  Flow nur den Exception-Typ ausgab.
+- Bei wiederholten Anläufen im Config-Flow wurde der jeweils vorherige
+  FinTS-Client (samt PIN-Referenz) nie geschlossen; er wird jetzt vor jedem
+  neuen Versuch aufgeräumt.
+
+### Hinzugefügt
+
+- SCA-befreite Logins werden unterstützt: Meldet die Bank Antwortcode `3076`
+  („Starke Kundenauthentifizierung nicht notwendig“) und bietet kein
+  Zwei-Schritt-TAN-Verfahren an, läuft die Einrichtung jetzt einschrittig
+  und ohne TAN-Abfrage bis zur Kontoauswahl durch, statt mit „kein
+  TAN-Verfahren“ abzubrechen.
+
+### Intern
+
+- Neue Exception `AuthRejectedError(codes)` in `api.py` kapselt die
+  Auth-Ablehnung samt aufgezeichneter Antwortcodes; `_ExtendedFinTSClient`
+  zeichnet 9xxx-Codes und die SCA-Befreiung in `_process_response` auf.
+- Die Fake-Bank des Verify-Harness kennt zwei neue Flags: `pinerror`
+  (Ablehnung mit 9942 → `invalid_auth`-Pfad) und `nosca` (SCA-befreiter
+  Login ohne TAN-Challenge). Beide Szenarien sind end-to-end gegen ein
+  Sandbox-HA verifiziert.
+
 ## [0.5.0] - 2026-08-11
 
 Bugfix- und Härtungs-Runde auf Basis eines Runtime-Verifikationslaufs gegen
