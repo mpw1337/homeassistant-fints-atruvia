@@ -76,6 +76,8 @@ next poll, no restart:
 | `nohisal` | `get_balance` answers without a HISAL segment → `ValueError("No balance data returned for account …")` in `api.py` |
 | `nobooked` | HISAL present but without a booked balance → `ValueError("No booked balance in HISAL response for account …")` |
 | `nomech` | bank offers no two-step TAN mechanism (empty BPD/3920) → `NoTanMechanismError` in `api.py` → config-flow error key `no_tan_mechanism` — the regression path for the formerly opaque `KeyError: '999'` from python-fints' `is_tan_media_required` |
+| `pinerror` | bank rejects dialog init with code 9942 → `FinTSClientPINError` → `AuthRejectedError` in `api.py` → config-flow error key `invalid_auth` |
+| `nosca` | SCA-exempt login (code 3076): bank offers no two-step TAN mechanism and requires no TAN challenge |
 
 `$SB_ROOT/fakebank.log` records each connect (`pin_len`, `restored_state`) and
 `SEND_TAN`.

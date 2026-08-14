@@ -362,6 +362,10 @@ class FinTsAtruviaClient:
         ``client.sca_not_required``), a missing two-step mechanism is
         expected and legitimate — the guard logs and continues one-step
         instead of raising, and the TAN-medium probe is skipped entirely.
+
+        Raises ``AuthRejectedError`` if the bank rejects authentication
+        during dialog initialization (``FinTSClientPINError`` or
+        ``FinTSClientTemporaryAuthError``).
         """
         client = self._build_client()
         self._client = client
@@ -442,6 +446,10 @@ class FinTsAtruviaClient:
         :param tan_response: The NeedTANResponse object returned by a
                              previous call (init_system_id or a data fetch).
         :param tan: The TAN value, or "" for push/decoupled TANs.
+
+        Raises ``AuthRejectedError`` if the bank rejects authentication
+        while completing the TAN challenge (``FinTSClientPINError`` or
+        ``FinTSClientTemporaryAuthError``).
         """
         client = self._get_client()
         try:

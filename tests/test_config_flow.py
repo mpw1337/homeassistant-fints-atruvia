@@ -290,7 +290,7 @@ async def test_flow_logs_none_when_auth_rejected_without_codes(
 
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "invalid_auth"}
-    assert "none" in caplog.text
+    assert "codes: none" in caplog.text
 
 
 async def test_flow_retry_closes_the_leaked_client(hass):
