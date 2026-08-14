@@ -33,6 +33,7 @@
     },
     "error": {
       "cannot_connect": "Verbindung zur Bank fehlgeschlagen. Bitte Zugangsdaten und URL prüfen.",
+      "invalid_auth": "Die Bank hat die Anmeldung abgelehnt (Antwortcode im Home-Assistant-Log). Mögliche Ursachen: PIN falsch, Online-Zugang gesperrt oder FinTS/HBCI für diesen Login nicht freigeschaltet. Achtung: Nach mehreren Fehlversuchen sperren Banken den Zugang — bitte zuerst im Web-Banking prüfen.",
       "no_tan_mechanism": "Die Bank hat kein unterstütztes Zwei-Schritt-TAN-Verfahren angeboten. Bitte Bankleitzahl, Zugangsdaten und URL prüfen — möglicherweise ist der Online-Zugang gesperrt oder noch nicht freigeschaltet.",
       "no_accounts_found": "Keine Konten gefunden.",
       "insecure_url": "Die FinTS-URL muss mit https:// beginnen. Plain http würde die PIN unverschlüsselt übertragen.",

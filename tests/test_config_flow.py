@@ -11,7 +11,7 @@ from homeassistant.config_entries import SOURCE_USER
 from homeassistant.data_entry_flow import FlowResultType, UnknownFlow
 
 from custom_components.fints_atruvia import DOMAIN, _entry_unique_id
-from custom_components.fints_atruvia.api import NoTanMechanismError
+from custom_components.fints_atruvia.api import AuthRejectedError, NoTanMechanismError
 from custom_components.fints_atruvia.config_flow import FintsBankingConfigFlow
 from custom_components.fints_atruvia.storage import async_get_master_key
 
@@ -222,3 +222,155 @@ async def test_completed_flow_closes_client(hass):
     entry_data = result["data"]
     assert "credential_id" in entry_data
     assert "password" not in entry_data
+
+
+async def test_flow_shows_invalid_auth_when_bank_rejects_authentication(
+    hass, caplog: pytest.LogCaptureFixture
+):
+    """``AuthRejectedError`` must surface as ``invalid_auth``, codes logged.
+
+    Before the fix this fell through the blanket ``except Exception`` and
+    looked like ``cannot_connect`` — indistinguishable from a network issue,
+    and the bank's response code never reached the log.
+    """
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+    assert result["type"] is FlowResultType.FORM
+
+    client = MagicMock()
+    client.init_system_id.side_effect = AuthRejectedError(codes=("9942",))
+    with patch(
+        "custom_components.fints_atruvia.config_flow.FinTsAtruviaClient",
+        return_value=client,
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                "blz": "12345678",
+                "username": "netkey1",
+                "password": "hunter2",
+                "url": _URL,
+            },
+        )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+    assert result["errors"] == {"base": "invalid_auth"}
+    assert "9942" in caplog.text
+    # Log hygiene: never the PIN, never python-fints' own bank-text exception.
+    assert "hunter2" not in caplog.text
+    assert "FinTSClientPINError" not in caplog.text
+
+
+async def test_flow_logs_none_when_auth_rejected_without_codes(
+    hass, caplog: pytest.LogCaptureFixture
+):
+    """An ``AuthRejectedError`` with no codes must log ``none``, not crash."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+    assert result["type"] is FlowResultType.FORM
+
+    client = MagicMock()
+    client.init_system_id.side_effect = AuthRejectedError(codes=())
+    with patch(
+        "custom_components.fints_atruvia.config_flow.FinTsAtruviaClient",
+        return_value=client,
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                "blz": "12345678",
+                "username": "netkey1",
+                "password": "hunter2",
+                "url": _URL,
+            },
+        )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "invalid_auth"}
+    assert "none" in caplog.text
+
+
+async def test_flow_retry_closes_the_leaked_client(hass):
+    """A retry after a failed handshake must close the earlier client first.
+
+    Before the fix, ``self._client = FinTsAtruviaClient(...)`` on retry just
+    overwrote the attribute, leaking the previous client (and the PIN
+    python-fints holds inside it) until the flow itself was torn down.
+    """
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+    assert result["type"] is FlowResultType.FORM
+
+    first_client = MagicMock()
+    first_client.init_system_id.side_effect = RuntimeError("no bank in tests")
+    second_client = _client_mock()
+
+    with patch(
+        "custom_components.fints_atruvia.config_flow.FinTsAtruviaClient",
+        side_effect=[first_client, second_client],
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                "blz": "12345678",
+                "username": "netkey1",
+                "password": "hunter2",
+                "url": _URL,
+            },
+        )
+        assert result["type"] is FlowResultType.FORM
+        assert result["errors"] == {"base": "cannot_connect"}
+        assert first_client.close.call_count == 0
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                "blz": "12345678",
+                "username": "netkey1",
+                "password": "hunter2",
+                "url": _URL,
+            },
+        )
+
+    assert first_client.close.call_count == 1
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "accounts"
+
+
+async def test_2fa_shows_invalid_auth_when_bank_rejects_tan(hass, caplog):
+    """``AuthRejectedError`` from ``complete_tan`` must also map to invalid_auth."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+    assert result["type"] is FlowResultType.FORM
+
+    client = MagicMock()
+    # Any non-None return value is treated as a NeedTANResponse by the flow.
+    client.init_system_id.return_value = MagicMock()
+    client.complete_tan.side_effect = AuthRejectedError(codes=("9931",))
+    with patch(
+        "custom_components.fints_atruvia.config_flow.FinTsAtruviaClient",
+        return_value=client,
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                "blz": "12345678",
+                "username": "netkey1",
+                "password": "hunter2",
+                "url": _URL,
+            },
+        )
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "2fa"
+
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "2fa"
+    assert result["errors"] == {"base": "invalid_auth"}
+    assert "9931" in caplog.text

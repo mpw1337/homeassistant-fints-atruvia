@@ -27,7 +27,12 @@ from . import (
     DOMAIN,
     _entry_unique_id,
 )
-from .api import FinTsAtruviaClient, InvalidUrlError, NoTanMechanismError
+from .api import (
+    AuthRejectedError,
+    FinTsAtruviaClient,
+    InvalidUrlError,
+    NoTanMechanismError,
+)
 from .storage import (
     CredentialStoreError,
     FintsCredentialStore,
@@ -218,7 +223,7 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
     # Step 2: FinTS system-ID sync (no user-facing form)
     # ------------------------------------------------------------------
 
-    async def async_step_sync(
+    async def async_step_sync(  # noqa: PLR0911 - each except branch shows its own form (see _validate_https_url above)
         self,
         user_input: dict[str, Any] | None = None,  # noqa: ARG002 - HA passes it to every step; this one shows no form
     ) -> ConfigFlowResult:
@@ -231,6 +236,12 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
         # Plaintext PIN lives only inside this flow's memory; we never
         # write the unencrypted credentials to disk via async_create_entry.
         pin = creds["password"]
+        if self._client is not None:
+            # A previous attempt in this same flow (e.g. a retry after
+            # cannot_connect) left a client referenced — and with it, the PIN
+            # python-fints holds internally. Close it before building the
+            # replacement below instead of just overwriting the attribute.
+            await self.hass.async_add_executor_job(self._client.close)
         try:
             self._client = FinTsAtruviaClient(
                 blz=creds["blz"],
@@ -256,6 +267,16 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
                 step_id="user",
                 data_schema=STEP_USER_SCHEMA,
                 errors={"base": "no_tan_mechanism"},
+            )
+        except AuthRejectedError as exc:
+            _LOGGER.error(  # noqa: TRY400 - log hygiene: only bare response codes, no bank text (SECURITY.md §10)
+                "FinTS system-ID init failed: bank rejected authentication (codes: %s)",
+                ",".join(exc.codes) or "none",
+            )
+            return self.async_show_form(
+                step_id="user",
+                data_schema=STEP_USER_SCHEMA,
+                errors={"base": "invalid_auth"},
             )
         except Exception as exc:  # noqa: BLE001
             # Log only the exception type. python-fints errors may quote
@@ -298,6 +319,16 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
                     self._client.complete_tan,
                     self._tan_response,
                     "",
+                )
+            except AuthRejectedError as exc:
+                _LOGGER.error(  # noqa: TRY400 - log hygiene: only bare response codes, no bank text (SECURITY.md §10)
+                    "TAN challenge failed: bank rejected authentication (codes: %s)",
+                    ",".join(exc.codes) or "none",
+                )
+                return self.async_show_form(
+                    step_id="2fa",
+                    data_schema=vol.Schema({}),
+                    errors={"base": "invalid_auth"},
                 )
             except Exception as exc:  # noqa: BLE001
                 _LOGGER.error(  # noqa: TRY400 - log hygiene: no python-fints traceback (SECURITY.md §10)
