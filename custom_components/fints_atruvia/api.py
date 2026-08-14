@@ -298,6 +298,36 @@ class FinTsAtruviaClient:
         self._client = None
         self._cached_accounts = None
 
+    @staticmethod
+    def _ensure_two_step_mechanism_or_sca_exempt(client: FinTS3PinTanClient) -> bool:
+        """Confirm a two-step TAN mechanism is active, or an SCA exemption.
+
+        Returns ``True`` if a two-step mechanism is active, meaning the
+        subsequent TAN-medium probe is safe to run. Returns ``False`` if the
+        bank signalled SCA exemption (response code 3076) instead - the
+        caller must then skip that probe, since python-fints'
+        ``is_tan_media_required()`` raises a raw ``KeyError`` for mechanism
+        "999".
+
+        Raises ``NoTanMechanismError`` if neither applies (see
+        ``init_system_id`` docstring).
+        """
+        if client.get_current_tan_mechanism() not in (None, "999"):
+            return True
+        if getattr(client, "sca_not_required", False):
+            _LOGGER.debug(
+                "Bank signalled SCA exemption (3076); "
+                "continuing with one-step mechanism"
+            )
+            return False
+        _LOGGER.debug(
+            "No two-step TAN mechanism negotiable: "
+            "%d allowed security functions, %d supported mechanisms",
+            len(getattr(client, "allowed_security_functions", ())),
+            len(client.get_tan_mechanisms()),
+        )
+        raise NoTanMechanismError(_MSG_NO_TAN_MECHANISM)
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -326,6 +356,12 @@ class FinTsAtruviaClient:
         TAN mechanism (no response code 3920, BPD withheld, or only
         unsupported HITANS versions) — without this guard python-fints'
         ``is_tan_media_required()`` raises a raw ``KeyError`` instead.
+
+        Exception: if the bank signalled response code 3076 ("Starke
+        Kundenauthentifizierung nicht notwendig", tracked as
+        ``client.sca_not_required``), a missing two-step mechanism is
+        expected and legitimate — the guard logs and continues one-step
+        instead of raising, and the TAN-medium probe is skipped entirely.
         """
         client = self._build_client()
         self._client = client
@@ -349,16 +385,13 @@ class FinTsAtruviaClient:
                         client.set_tan_mechanism(sec_func)
                         break
 
-            if client.get_current_tan_mechanism() in (None, "999"):
-                _LOGGER.debug(
-                    "No two-step TAN mechanism negotiable: "
-                    "%d allowed security functions, %d supported mechanisms",
-                    len(getattr(client, "allowed_security_functions", ())),
-                    len(client.get_tan_mechanisms()),
-                )
-                raise NoTanMechanismError(_MSG_NO_TAN_MECHANISM)
+            two_step_active = self._ensure_two_step_mechanism_or_sca_exempt(client)
 
-            if client.selected_tan_medium is None and client.is_tan_media_required():
+            if (
+                two_step_active
+                and client.selected_tan_medium is None
+                and client.is_tan_media_required()
+            ):
                 _, media = client.get_tan_media()
                 if media:
                     client.set_tan_medium(media[0])

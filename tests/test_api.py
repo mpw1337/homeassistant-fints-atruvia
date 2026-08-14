@@ -38,6 +38,7 @@ def test_init_system_id_raises_when_bank_offers_no_two_step_mechanism():
     bank.allowed_security_functions = ["999"]
     bank.selected_tan_medium = None
     bank.is_tan_media_required.side_effect = KeyError("999")
+    bank.sca_not_required = False
 
     client = _client()
     with (
@@ -48,6 +49,31 @@ def test_init_system_id_raises_when_bank_offers_no_two_step_mechanism():
 
     bank.is_tan_media_required.assert_not_called()
     bank.__enter__.assert_not_called()
+
+
+def test_init_system_id_allows_one_step_when_bank_signals_sca_exemption():
+    """3076 (SCA not required) -> guard must not raise, one-step init proceeds.
+
+    ``is_tan_media_required()`` is skipped entirely for the SCA-exempt path
+    since python-fints raises a raw ``KeyError`` for it with mechanism
+    "999" (same underlying quirk as the guard above).
+    """
+    bank = MagicMock()
+    bank.get_current_tan_mechanism.return_value = "999"
+    bank.get_tan_mechanisms.return_value = {}
+    bank.allowed_security_functions = ["999"]
+    bank.selected_tan_medium = None
+    bank.sca_not_required = True
+    bank.init_tan_response = None
+    bank.get_sepa_accounts.return_value = []
+
+    client = _client()
+    with patch.object(client, "_build_client", return_value=bank):
+        result = client.init_system_id()
+
+    assert result is None
+    bank.is_tan_media_required.assert_not_called()
+    bank.__enter__.assert_called_once()
 
 
 def _bare_extended_client() -> _ExtendedFinTSClient:
