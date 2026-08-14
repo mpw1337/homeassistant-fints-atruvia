@@ -19,6 +19,8 @@ Environment:
                           D/nohisal           get_balance answers without a HISAL
                           D/nobooked          HISAL without a booked balance
                           D/nomech            bank offers no two-step TAN mechanism (empty BPD/3920)
+                          D/pinerror          bank rejects dialog init with code 9942 (wrong PIN/locked access)
+                          D/nosca             bank is SCA-exempt (3076): no two-step mechanism, no TAN challenge
   FAKE_FINTS_TAN=1      same as the tanmode flag, from startup
 """
 import datetime
@@ -27,6 +29,7 @@ from decimal import Decimal
 
 try:
     import fints.client as _fc
+    from fints.exceptions import FinTSClientPINError
     from fints.models import SEPAAccount
 except ImportError:  # not a HA process
     _fc = None
@@ -152,6 +155,27 @@ class FakeFinTS3PinTanClient:
 
     # --- dialog / TAN plumbing ------------------------------------------
     def fetch_tan_mechanisms(self):
+        if _flag("pinerror"):
+            # Real bank: dialog init rejected with code 9942 ("PIN falsch
+            # oder Zugang gesperrt"), surfaced by python-fints as
+            # FinTSClientPINError via _process_response. Our fake never
+            # opens a real dialog (it replaces FinTS3PinTanClient wholesale,
+            # so _ExtendedFinTSClient._process_response in api.py is never
+            # reached on this path) -- per the Task-4 brief this is an
+            # accepted shortcut: record the code directly on
+            # observed_error_codes (the same list _process_response would
+            # have appended to) and raise the same exception type api.py
+            # catches in init_system_id().
+            self.observed_error_codes.append("9942")
+            msg = "Anmeldung abgelehnt (Fake-Bank pinerror flag)"
+            raise FinTSClientPINError(msg)
+        if _flag("nosca"):
+            # Real bank: response code 3076 ("Starke Kundenauthentifizierung
+            # nicht notwendig") sets sca_not_required via _process_response,
+            # which never runs here for the same reason as above -- so we
+            # set it directly, mirroring only what that code does (3076 is
+            # not a 9xxx code, so observed_error_codes stays untouched).
+            self.sca_not_required = True
         mechs = self.get_tan_mechanisms()
         # Real client: response code 3920 populates allowed_security_functions,
         # while the BPD's HITANS parameters feed get_tan_mechanisms() (see
@@ -162,7 +186,9 @@ class FakeFinTS3PinTanClient:
         return mechs
 
     def get_tan_mechanisms(self):
-        return {} if _flag("nomech") else {"942": "SecureGo plus"}
+        # nosca: SCA-exempt logins are one-step, so the bank offers no
+        # two-step mechanism either -- same empty BPD/3920 shape as nomech.
+        return {} if _flag("nomech") or _flag("nosca") else {"942": "SecureGo plus"}
 
     def get_current_tan_mechanism(self):
         return self._mech
