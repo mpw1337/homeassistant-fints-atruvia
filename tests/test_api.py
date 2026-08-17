@@ -233,7 +233,10 @@ def test_process_response_records_every_code_once_in_order():
 
 
 def test_process_response_ignores_unrelated_code():
-    """A code that is neither 9xxx nor 3076 leaves both attributes untouched."""
+    """A code that is neither 9xxx nor 3076.
+
+    Leaves observed_error_codes and sca_not_required untouched.
+    """
     instance = _bare_extended_client()
     response = MagicMock(code="3920")
 
@@ -242,6 +245,7 @@ def test_process_response_ignores_unrelated_code():
 
     assert instance.observed_error_codes == []
     assert instance.sca_not_required is False
+    assert instance.observed_codes == ["3920"]
 
 
 def test_init_system_id_raises_auth_rejected_error_with_observed_codes():

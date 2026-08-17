@@ -10,7 +10,7 @@ Diagnose-Verbesserung für Setup-Fehler: FinTS-Antwortcodes werden jetzt beim
 „kein unterstütztes Zwei-Schritt-TAN-Verfahren"-Fehler mitgeloggt; dazu
 Dokumentation zur optionalen Produkt-ID im Einrichtungsdialog und README.
 
-### Behoben
+### Geändert
 
 - `NoTanMechanismError` (etwa: „Bank bietet kein Zwei-Schritt-TAN-Verfahren")
   wird jetzt mit aufgezeichneten Response-Codes als Diagnose-Hilfe ausgegeben
@@ -22,19 +22,20 @@ Dokumentation zur optionalen Produkt-ID im Einrichtungsdialog und README.
 
 ### Hinzugefügt
 
-- Neue Fake-Bank-Flag `nohitans` im Verify-Harness: Der Konten-Automat
-  scheitert mit `NoTanMechanismError` und observed_codes = [3920], um
-  die neuen Diagnose-Verbesserungen zu testen.
-- Optional-Feld-Hinweise im Config-Flow und README zur Produkt-ID:
-  Wenn leer gelassen, wird eine eingebaute FinTS-Produkt-ID verwendet.
-  Ermöglicht User, unterschiedliche Produkt-IDs (z. B. für mehrere
-  Onlinebanking-Clients) einzutragen.
+- Optional-Feld-Hinweise im Config-Flow und README zur Produkt-ID: Das
+  Feld war schon immer optional, neu ist nur die Dokumentation dazu. Wenn
+  leer gelassen, wird eine eingebaute FinTS-Produkt-ID verwendet; das Feld
+  bleibt für abweichende Produkt-IDs (z. B. für mehrere Onlinebanking-
+  Clients) nutzbar.
 
 ### Intern
 
 - `_ExtendedFinTSClient` zeichnet alle Response-Codes (nicht nur 9xxx) während
   des System-ID-Setups auf; `NoTanMechanismError` trägt sie jetzt als
   `.codes` Property.
+- Neue Fake-Bank-Flag `nohitans` im Verify-Harness: Der Konten-Automat
+  scheitert mit `NoTanMechanismError` und observed_codes = [3920], um
+  die neuen Diagnose-Verbesserungen zu testen.
 - Testabdeckung: Unit-Suite ergänzt um die `nohitans`-Szenarien.
 
 ## [0.6.0] - 2026-08-14
