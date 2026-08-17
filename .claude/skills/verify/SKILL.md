@@ -76,6 +76,7 @@ next poll, no restart:
 | `nohisal` | `get_balance` answers without a HISAL segment → `ValueError("No balance data returned for account …")` in `api.py` |
 | `nobooked` | HISAL present but without a booked balance → `ValueError("No booked balance in HISAL response for account …")` |
 | `nomech` | bank offers no two-step TAN mechanism (empty BPD/3920) → `NoTanMechanismError` in `api.py` → config-flow error key `no_tan_mechanism` — the regression path for the formerly opaque `KeyError: '999'` from python-fints' `is_tan_media_required` |
+| `nohitans` | bank announces exactly one two-step mechanism via 3920 but the BPD has no (implemented) HITANS segment for it → `get_tan_mechanisms()` still empty → same `NoTanMechanismError` / `no_tan_mechanism` as `nomech`, but the observed-codes list includes `3920` — the production shape Task 1/2's diagnostics were added for (bank announced one mechanism, BPD unparseable) |
 | `pinerror` | bank rejects dialog init with code 9942 → `FinTSClientPINError` → `AuthRejectedError` in `api.py` → config-flow error key `invalid_auth` |
 | `nosca` | SCA-exempt login (code 3076): bank offers no two-step TAN mechanism and requires no TAN challenge |
 

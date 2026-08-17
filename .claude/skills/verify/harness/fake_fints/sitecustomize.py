@@ -19,6 +19,9 @@ Environment:
                           D/nohisal           get_balance answers without a HISAL
                           D/nobooked          HISAL without a booked balance
                           D/nomech            bank offers no two-step TAN mechanism (empty BPD/3920)
+                          D/nohitans          bank announces one two-step mechanism via 3920 but has
+                                              no (implemented) HITANS segment for it -> NoTanMechanismError
+                                              with 3920 in the observed codes, unlike nomech's empty codes
                           D/pinerror          bank rejects dialog init with code 9942 (wrong PIN/locked access)
                           D/nosca             bank is SCA-exempt (3076): no two-step mechanism, no TAN challenge
   FAKE_FINTS_TAN=1      same as the tanmode flag, from startup
@@ -176,6 +179,20 @@ class FakeFinTS3PinTanClient:
             # set it directly, mirroring only what that code does (3076 is
             # not a 9xxx code, so observed_error_codes stays untouched).
             self.sca_not_required = True
+        if _flag("nohitans"):
+            # Real bank: response code 3920 announces exactly one two-step
+            # mechanism (e.g. '946') via _process_response, which never runs
+            # here for the same reason as above -- so we record the code
+            # directly onto observed_codes (the same list _process_response
+            # would have appended it to; 3920 is not a 9xxx code, so
+            # observed_error_codes stays untouched). Unlike nomech (BPD/3920
+            # withheld entirely -> empty observed codes), 3920 IS present
+            # here but the BPD has no (implemented) HITANS segment for the
+            # mechanism it names, so get_tan_mechanisms() still comes back
+            # empty below -- this is what lets the diagnostics distinguish
+            # the two production failure shapes.
+            if "3920" not in self.observed_codes:
+                self.observed_codes.append("3920")
         mechs = self.get_tan_mechanisms()
         # Real client: response code 3920 populates allowed_security_functions,
         # while the BPD's HITANS parameters feed get_tan_mechanisms() (see
@@ -188,7 +205,11 @@ class FakeFinTS3PinTanClient:
     def get_tan_mechanisms(self):
         # nosca: SCA-exempt logins are one-step, so the bank offers no
         # two-step mechanism either -- same empty BPD/3920 shape as nomech.
-        return {} if _flag("nomech") or _flag("nosca") else {"942": "SecureGo plus"}
+        # nohitans: 3920 named a mechanism, but no HITANS segment for it
+        # made it into the (fake) BPD, so the mechanism dict is empty too.
+        if _flag("nomech") or _flag("nosca") or _flag("nohitans"):
+            return {}
+        return {"942": "SecureGo plus"}
 
     def get_current_tan_mechanism(self):
         return self._mech
