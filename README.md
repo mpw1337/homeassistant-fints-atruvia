@@ -36,6 +36,7 @@ Home Assistant neu starten.
    - NetKey / Benutzername
    - PIN
    - Bank auswählen: "Sparda-Bank (Atruvia)" für Sparda SW oder BW
+   - **Produkt-ID** (optional) — wird das Feld leer gelassen, nutzt die Integration automatisch eine eingebaute FinTS-Registrierungsnummer. Wer eine eigene registrierte Produkt-ID besitzt, kann diese unter https://www.hbci-zka.de/register/prod_register.htm beantragen und hier eintragen.
 3. Falls die Bank eine Bestätigung anfordert: **SecureGo+ App öffnen**, Anmeldung bestätigen, dann auf **Weiter** klicken
 4. Konten auswählen, die überwacht werden sollen
 

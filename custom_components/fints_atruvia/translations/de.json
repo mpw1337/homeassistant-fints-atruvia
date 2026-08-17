@@ -10,6 +10,9 @@
           "url": "Bank",
           "custom_url": "Manuelle FinTS-URL (https://)",
           "product_id": "Produkt-ID (optional)"
+        },
+        "data_description": {
+          "product_id": "Leer lassen — es wird automatisch eine eingebaute Produkt-ID (FinTS-Registrierungsnummer) verwendet. Nur ausfüllen, wenn du eine eigene registrierte Produkt-ID besitzt."
         }
       },
       "2fa": {
