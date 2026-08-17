@@ -114,13 +114,53 @@ async def test_flow_unique_id_is_keyed_hmac(hass):
     assert unique_id != unsalted
 
 
-async def test_flow_shows_dedicated_error_when_bank_offers_no_tan_mechanism(hass):
-    """``NoTanMechanismError`` must surface as ``no_tan_mechanism``.
+async def test_flow_shows_dedicated_error_when_bank_offers_no_tan_mechanism(
+    hass, caplog: pytest.LogCaptureFixture
+):
+    """``NoTanMechanismError`` must surface as ``no_tan_mechanism``, codes logged.
 
     Before the fix, python-fints' own ``KeyError`` for this case fell through
     the blanket ``except Exception`` and looked identical to a network
-    failure — indistinguishable from a wrong URL or a down bank.
+    failure — indistinguishable from a wrong URL or a down bank. The
+    observed response codes were also thrown away; now they reach the log so
+    a production failure (e.g. a 9075 that never arrived in dev) is
+    diagnosable.
     """
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+    assert result["type"] is FlowResultType.FORM
+
+    client = MagicMock()
+    client.init_system_id.side_effect = NoTanMechanismError(
+        "Bank offered no supported two-step TAN mechanism",
+        codes=("3920", "9075"),
+    )
+    with patch(
+        "custom_components.fints_atruvia.config_flow.FinTsAtruviaClient",
+        return_value=client,
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                "blz": "12345678",
+                "username": "netkey1",
+                "password": "hunter2",
+                "url": _URL,
+            },
+        )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "no_tan_mechanism"}
+    assert "3920,9075" in caplog.text
+    # Log hygiene: never the PIN, never python-fints' own bank-text exception.
+    assert "hunter2" not in caplog.text
+
+
+async def test_flow_logs_none_when_no_tan_mechanism_without_codes(
+    hass, caplog: pytest.LogCaptureFixture
+):
+    """A ``NoTanMechanismError`` with no codes must log ``none``, not crash."""
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": SOURCE_USER}
     )
@@ -146,6 +186,7 @@ async def test_flow_shows_dedicated_error_when_bank_offers_no_tan_mechanism(hass
 
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "no_tan_mechanism"}
+    assert "codes: none" in caplog.text
 
 
 async def test_abandoned_flow_closes_client(hass):

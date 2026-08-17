@@ -53,6 +53,13 @@ class InvalidUrlError(ValueError):
 class NoTanMechanismError(Exception):
     """Raised when the bank offers no supported two-step TAN mechanism."""
 
+    def __init__(
+        self, message: str = _MSG_NO_TAN_MECHANISM, *, codes: tuple[str, ...] = ()
+    ) -> None:
+        """Store the bank's numeric response codes observed during bootstrap."""
+        super().__init__(message)
+        self.codes = codes
+
 
 class AuthRejectedError(Exception):
     """Raised when the bank rejects authentication during a FinTS dialog."""
@@ -152,6 +159,24 @@ def _account_ref(account: SEPAAccount) -> str:
     return f"…{iban[-_IBAN_LAST4_LEN:]}"
 
 
+def _hitans_versions(client: FinTS3PinTanClient) -> list[int]:
+    """Return the sorted HITANS (TAN mechanism parameter) versions in the BPD.
+
+    Diagnostic-only: distinguishes "bank withheld BPD entirely" from "bank
+    offered only HITANS versions this integration doesn't support" in the
+    no-tan-mechanism debug log. Defensive because the BPD may be empty (no
+    dialog has completed yet) or, for an unusual client implementation,
+    ``bpd``/``find_segments``/``header`` may not behave as expected — a
+    diagnostics-only log line must never crash the guard it's inside of.
+    Versions are bare integers (log-hygiene-safe).
+    """
+    try:
+        segments = client.bpd.find_segments("HITANS")
+        return sorted({seg.header.version for seg in segments})
+    except Exception:  # noqa: BLE001 - diagnostics-only, must never raise
+        return []
+
+
 class _ExtendedFinTSClient(FinTS3PinTanClient):
     """python-fints subclass that returns the full HISAL segment from get_balance.
 
@@ -163,10 +188,10 @@ class _ExtendedFinTSClient(FinTS3PinTanClient):
 
     It also records the numeric response codes seen during dialog
     bootstrapping (see ``_process_response``) so a rejected authentication
-    can be diagnosed after the fact: the bootstrap dialogs run with
-    ``internal_send=True``, so python-fints itself never logs them, and the
-    static ``FinTSClientPINError`` message that follows a 9xxx code carries
-    no code of its own.
+    or a failed TAN-mechanism negotiation can be diagnosed after the fact:
+    the bootstrap dialogs run with ``internal_send=True``, so python-fints
+    itself never logs them, and the static ``FinTSClientPINError`` message
+    that follows a 9xxx code carries no code of its own.
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -178,6 +203,7 @@ class _ExtendedFinTSClient(FinTS3PinTanClient):
         would be shared across instances/clients.
         """
         self.observed_error_codes: list[str] = []
+        self.observed_codes: list[str] = []
         self.sca_not_required: bool = False
         super().__init__(*args, **kwargs)
 
@@ -192,11 +218,14 @@ class _ExtendedFinTSClient(FinTS3PinTanClient):
         Recording must happen before the ``super()`` call because that call
         can raise (e.g. ``FinTSClientPINError`` on a 9xxx code) — the codes
         need to survive the raise so callers can attach them to
-        ``AuthRejectedError``. Only the bare numeric code is kept, never
-        ``response.text`` or the response object itself (log hygiene: HBCI
-        response text can include account numbers).
+        ``AuthRejectedError`` or ``NoTanMechanismError``. Only the bare
+        numeric code is kept, never ``response.text`` or the response object
+        itself (log hygiene: HBCI response text can include account
+        numbers).
         """
         code = str(response.code)
+        if code not in self.observed_codes:
+            self.observed_codes.append(code)
         if code.startswith("9"):
             self.observed_error_codes.append(code)
         if code == "3076":
@@ -309,8 +338,9 @@ class FinTsAtruviaClient:
         ``is_tan_media_required()`` raises a raw ``KeyError`` for mechanism
         "999".
 
-        Raises ``NoTanMechanismError`` if neither applies (see
-        ``init_system_id`` docstring).
+        Raises ``NoTanMechanismError`` (carrying the client's observed
+        response codes, see ``init_system_id`` docstring) if neither
+        applies.
         """
         if client.get_current_tan_mechanism() not in (None, "999"):
             return True
@@ -322,11 +352,16 @@ class FinTsAtruviaClient:
             return False
         _LOGGER.debug(
             "No two-step TAN mechanism negotiable: "
-            "%d allowed security functions, %d supported mechanisms",
+            "%d allowed security functions, %d supported mechanisms, "
+            "HITANS versions in BPD: %s",
             len(getattr(client, "allowed_security_functions", ())),
             len(client.get_tan_mechanisms()),
+            _hitans_versions(client),
         )
-        raise NoTanMechanismError(_MSG_NO_TAN_MECHANISM)
+        raise NoTanMechanismError(
+            _MSG_NO_TAN_MECHANISM,
+            codes=tuple(getattr(client, "observed_codes", ())),
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -355,7 +390,10 @@ class FinTsAtruviaClient:
         Raises ``NoTanMechanismError`` if the bank offers no usable two-step
         TAN mechanism (no response code 3920, BPD withheld, or only
         unsupported HITANS versions) — without this guard python-fints'
-        ``is_tan_media_required()`` raises a raw ``KeyError`` instead.
+        ``is_tan_media_required()`` raises a raw ``KeyError`` instead. The
+        error carries ``codes``, every numeric response code observed during
+        bootstrap (see ``_ExtendedFinTSClient._process_response``), so a
+        production failure can be diagnosed after the fact.
 
         Exception: if the bank signalled response code 3076 ("Starke
         Kundenauthentifizierung nicht notwendig", tracked as

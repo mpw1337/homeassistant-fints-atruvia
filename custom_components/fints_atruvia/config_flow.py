@@ -259,9 +259,11 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
 
         try:
             result = await self.hass.async_add_executor_job(self._client.init_system_id)
-        except NoTanMechanismError:
-            _LOGGER.error(  # noqa: TRY400 - log hygiene: static text only, no exception content (SECURITY.md §10)
-                "FinTS system-ID init failed: no supported two-step TAN mechanism"
+        except NoTanMechanismError as exc:
+            _LOGGER.error(  # noqa: TRY400 - log hygiene: only bare response codes, no bank text (SECURITY.md §10)
+                "FinTS system-ID init failed: no supported two-step TAN mechanism "
+                "(codes: %s)",
+                ",".join(exc.codes) or "none",
             )
             return self.async_show_form(
                 step_id="user",
