@@ -107,11 +107,22 @@ Hinweise:
 
 ## 90-Tage Re-Authentifizierung
 
-Atruvia-Banken erfordern alle ~90 Tage eine erneute Bestätigung via SecureGo+:
+Atruvia-Banken erfordern alle ~90 Tage eine erneute Bestätigung via SecureGo+.
+Manche Zugänge verlangen die Freigabe zunächst bei **jedem** Abruf, bis die Bank
+die 90-Tage-Befreiung erteilt hat — auch direkt nach der Einrichtung. Der Ablauf
+ist in beiden Fällen derselbe:
 
-1. Home Assistant sendet eine **persistente Benachrichtigung**
+1. Home Assistant sendet eine **persistente Benachrichtigung**; die Sensoren
+   behalten ihren letzten Wert (bzw. bleiben nach einem Neustart zunächst
+   `unbekannt`) und zeigen `2fa_pending: true`
 2. **SecureGo+ App** öffnen und die Anfrage bestätigen
-3. In HA den Button **"Re-Authentifizierung bestätigen"** drücken
+3. In HA den Button **"Re-Authentifizierung bestätigen"** drücken — der Abruf
+   läuft dann sofort in der gerade freigegebenen Sitzung
+
+Pro Abruf öffnet die Integration genau einen FinTS-Dialog, es kommt also höchstens
+eine Freigabe-Anfrage pro Abruf (alle 6 Stunden). Lehnt die Bank die gespeicherte
+PIN ab, wird nicht erneut versucht (Sperrgefahr nach drei Fehlversuchen), sondern
+HA fragt die Zugangsdaten neu ab.
 
 ---
 

@@ -4,6 +4,44 @@ Alle nennenswerten Änderungen an diesem Projekt werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/);
 Einträge sind deutsch, konsistent mit `README.md` / `SECURITY.md`.
 
+## [0.6.3] - 2026-09-02
+
+Bugfix-Release für Zugänge, bei denen die Bank die SecureGo+-Freigabe bei jedem
+Dialog verlangt (Sparda-Bank BW in der Praxis): Der Coordinator lief nach der
+Einrichtung in eine Endlosschleife aus Fehlversuchen, und jeder Versuch löste eine
+neue Push-Anfrage auf dem Handy aus, deren Bestätigung wirkungslos blieb.
+
+### Behoben
+
+- **Freigabe-Anfrage beim Dialogstart wurde ignoriert.** python-fints öffnete pro
+  Abruf-Aufruf einen eigenen Bank-Dialog, merkte sich die Freigabe-Anforderung
+  (3955) nur und schickte den Auftrag trotzdem. Die Bank lehnte ab (9340),
+  python-fints wertete das als PIN-Fehler und sperrte die PIN, der Dialog-Abbau
+  scheiterte mit einer nackten `Exception`, HA wiederholte das Setup mit
+  Backoff — und jeder Versuch war ein neuer Push. Die Integration arbeitet jetzt
+  in **einem** Dialog pro Abruf, erkennt die Freigabe-Anforderung beim Start und
+  meldet sie wie die 90-Tage-Re-Authentifizierung: Benachrichtigung, Button,
+  nach dem Drücken läuft der Abruf **in derselben freigegebenen Sitzung** weiter.
+- **Erster Abruf mit Freigabe-Pflicht** (direkt nach der Einrichtung oder nach
+  einem Neustart) legt die Entitäten jetzt an (Sensoren `unbekannt`,
+  `2fa_pending: true`) statt in den Reauth-Flow zu springen, der für diese
+  Zugänge in dieselbe Anforderung zurückgeführt hätte.
+- **Abgelehnte PIN beim Abruf** führt nicht mehr in eine Wiederholungsschleife
+  (Sperrgefahr), sondern in HAs Reauth-Flow zur Neueingabe der Zugangsdaten.
+- **Fehlgeschlagene Ersteinrichtung mit `FinTSDialogInitError`.** Nach dem von der
+  Bank abgelehnten Einschritt-Sync schickte die Integration ein HKEND in den
+  bereits abgebrochenen Dialog; die Antwort 9340 sperrte die PIN in python-fints
+  und der Zweischritt-Sync scheiterte beim Signieren. Ein abgelehnter Sync wird
+  jetzt ohne HKEND verworfen.
+
+### Intern
+
+- `FinTsAtruviaClient.open_dialog()` / `close_dialog()`; `complete_tan` und
+  `init_system_id` lassen den authentifizierten Dialog für den Aufrufer offen.
+- Fehlerlogs nennen die Kette der Exception-Typen (`describe_exception_chain`),
+  weiterhin ohne Banktext.
+- Fake-Bank des Verify-Harness: Flag `initsca`, `pinerror` auch beim Abruf.
+
 ## [0.6.2] - 2026-09-01
 
 Bugfix-Release für die Ersteinrichtung: Auf einer frischen Installation
