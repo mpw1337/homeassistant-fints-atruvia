@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers.update_coordinator import UpdateFailed
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     async_capture_events,
@@ -22,7 +23,7 @@ from custom_components.fints_atruvia import (
     DOMAIN,
     EVENT_NEW_TRANSACTION,
 )
-from custom_components.fints_atruvia.api import TanRequiredError
+from custom_components.fints_atruvia.api import AuthRejectedError, TanRequiredError
 from custom_components.fints_atruvia.coordinator import (
     FintsBankingCoordinator,
     _transaction_hash,
@@ -55,6 +56,8 @@ def _make_coordinator(hass, selected_accounts: list[str]) -> FintsBankingCoordin
     coordinator._client = MagicMock()
     # Avoid persisting a MagicMock as the FinTS state blob on a successful update.
     coordinator._client.deconstruct.return_value = None
+    # A MagicMock return value is truthy and would read as an SCA challenge.
+    coordinator._client.open_dialog.return_value = None
     return coordinator
 
 
@@ -73,15 +76,27 @@ def _balance() -> dict:
     }
 
 
-async def test_tan_required_before_first_success_raises_auth_failed(hass):
-    """Fix 1: `raise ... from e.response` must not turn into a TypeError."""
+async def test_tan_required_before_first_success_returns_empty_data(hass):
+    """First poll with an SCA challenge: expose the entities, keep 2FA pending.
+
+    Raising ConfigEntryAuthFailed here would send the user through the reauth
+    flow, whose own TAN completion reloads the entry — and the first poll would
+    demand SCA again for a bank without exemption (endless loop). With ``{}``
+    the sensors exist (unknown, ``2fa_pending``), the button is available and
+    the confirmation completes in the dialog that is still open.
+    """
     coordinator = _make_coordinator(hass, [_IBAN1])
-    coordinator._client.get_accounts.side_effect = TanRequiredError(SimpleNamespace())
+    challenge = SimpleNamespace(name="init challenge")
+    coordinator._client.open_dialog.return_value = challenge
 
-    with pytest.raises(ConfigEntryAuthFailed) as excinfo:
-        await coordinator._async_update_data()
+    result = await coordinator._async_update_data()
 
-    assert isinstance(excinfo.value.__cause__, TanRequiredError)
+    assert result == {}
+    assert coordinator.is_2fa_pending is True
+    assert coordinator._tan_response is challenge
+    coordinator._client.get_accounts.assert_not_called()
+    coordinator._client.close_dialog.assert_not_called()
+    coordinator._client.close.assert_not_called()
 
 
 async def test_tan_required_with_existing_data_returns_last_good(hass):
@@ -94,6 +109,70 @@ async def test_tan_required_with_existing_data_returns_last_good(hass):
 
     assert result is coordinator.data
     assert coordinator.is_2fa_pending is True
+
+
+async def test_successful_poll_opens_one_dialog_and_closes_it_after_the_fetch(hass):
+    coordinator = _make_coordinator(hass, [_IBAN1])
+    coordinator._seen_initialised = True
+    coordinator._client.get_accounts.return_value = [_account(_IBAN1)]
+    coordinator._client.get_balance.return_value = _balance()
+    coordinator._client.get_transactions.return_value = []
+    manager = MagicMock()
+    manager.attach_mock(coordinator._client.open_dialog, "open_dialog")
+    manager.attach_mock(coordinator._client.get_accounts, "get_accounts")
+    manager.attach_mock(coordinator._client.close_dialog, "close_dialog")
+
+    result = await coordinator._async_update_data()
+
+    assert _IBAN1 in result
+    names = [c[0] for c in manager.mock_calls]
+    assert names == ["open_dialog", "get_accounts", "close_dialog"]
+    coordinator._client.close.assert_not_called()
+
+
+async def test_job_level_tan_request_keeps_dialog_open(hass):
+    """A challenge from get_balance must not close the dialog complete_tan needs."""
+    coordinator = _make_coordinator(hass, [_IBAN1])
+    coordinator.data = {"prior": "state"}
+    coordinator._client.get_accounts.return_value = [_account(_IBAN1)]
+    coordinator._client.get_balance.side_effect = TanRequiredError(SimpleNamespace())
+
+    result = await coordinator._async_update_data()
+
+    assert result is coordinator.data
+    assert coordinator.is_2fa_pending is True
+    coordinator._client.close_dialog.assert_not_called()
+    coordinator._client.close.assert_not_called()
+
+
+async def test_rejected_login_raises_auth_failed_and_drops_client(hass, caplog):
+    """Wrong PIN: no retry loop (the bank locks after a few attempts)."""
+    coordinator = _make_coordinator(hass, [_IBAN1])
+    coordinator.data = {"prior": "state"}
+    coordinator._client.open_dialog.side_effect = AuthRejectedError(codes=("9942",))
+
+    with pytest.raises(ConfigEntryAuthFailed):
+        await coordinator._async_update_data()
+
+    coordinator._client.close.assert_called_once()
+    assert "9942" in caplog.text
+    assert coordinator.is_2fa_pending is False
+
+
+async def test_generic_failure_drops_client_and_logs_exception_chain(hass, caplog):
+    """python-fints' blocked-PIN Exception must not survive into the next poll."""
+    coordinator = _make_coordinator(hass, [_IBAN1])
+    blocked = Exception("Refusing to use PIN after block")
+    blocked.__cause__ = RuntimeError("PIN wrong?")
+    coordinator._client.get_accounts.side_effect = blocked
+
+    with pytest.raises(UpdateFailed):
+        await coordinator._async_update_data()
+
+    coordinator._client.close.assert_called_once()
+    coordinator._client.close_dialog.assert_not_called()
+    assert "FinTS update failed: Exception <- RuntimeError" in caplog.text
+    assert "Refusing" not in caplog.text
 
 
 async def test_no_lost_events_when_later_account_fails(hass):
@@ -265,14 +344,14 @@ async def test_complete_reauth_keeps_pending_when_bank_still_waits(hass):
     coordinator._tan_response = first
     coordinator.is_2fa_pending = True
     coordinator._client.complete_tan.return_value = pending
-    coordinator.async_request_refresh = AsyncMock()
+    coordinator.async_refresh = AsyncMock()
 
     assert await coordinator.async_complete_reauth() is False
 
     coordinator._client.complete_tan.assert_called_once_with(first, "")
     assert coordinator.is_2fa_pending is True
     assert coordinator._tan_response is pending
-    coordinator.async_request_refresh.assert_not_awaited()
+    coordinator.async_refresh.assert_not_awaited()
 
 
 async def test_complete_reauth_clears_pending_and_refreshes_on_success(hass):
@@ -280,10 +359,10 @@ async def test_complete_reauth_clears_pending_and_refreshes_on_success(hass):
     coordinator._tan_response = MagicMock(name="challenge")
     coordinator.is_2fa_pending = True
     coordinator._client.complete_tan.return_value = None
-    coordinator.async_request_refresh = AsyncMock()
+    coordinator.async_refresh = AsyncMock()
 
     assert await coordinator.async_complete_reauth() is True
 
     assert coordinator.is_2fa_pending is False
     assert coordinator._tan_response is None
-    coordinator.async_request_refresh.assert_awaited_once()
+    coordinator.async_refresh.assert_awaited_once()
