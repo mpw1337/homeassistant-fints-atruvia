@@ -431,9 +431,10 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
         # The FinTS dialog's last bank access (get_accounts / complete_tan)
         # already happened before this step runs — take the state python-fints
         # built up (system id, TAN mechanism, BPD/UPD) and release the client
-        # (and the PIN python-fints holds for it) now, in both the reauth and
-        # the new-entry branch below, rather than leaving it referenced on the
-        # flow object until HA discards it.
+        # (ending the dialog it still holds open, and dropping the PIN
+        # python-fints holds for it) now, in both the reauth and the new-entry
+        # branch below, rather than leaving it referenced on the flow object
+        # until HA discards it.
         fints_state: bytes | None = None
         if self._client is not None:
             client = self._client

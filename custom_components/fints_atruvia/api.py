@@ -433,7 +433,9 @@ class FinTsAtruviaClient:
     ) -> NeedTANResponse | None:
         """Open the standing dialog and cache the accounts, unless SCA comes first.
 
-        Returns the challenge (dialog left open) or ``None`` (dialog closed).
+        Returns the challenge or ``None``; either way the dialog stays open
+        for the caller (see :meth:`complete_tan`). Only a failed account
+        fetch closes it.
         """
         client.init_tan_response = None
         client.__enter__()
@@ -441,8 +443,9 @@ class FinTsAtruviaClient:
             return client.init_tan_response
         try:
             self._cached_accounts = client.get_sepa_accounts()
-        finally:
+        except Exception:
             self._close_standing_dialog()
+            raise
         return None
 
     # ------------------------------------------------------------------
@@ -466,9 +469,9 @@ class FinTsAtruviaClient:
           arrives with the TAN completion (see :meth:`complete_tan`).
 
         Returns ``None`` when no SCA was required (accounts cached, dialog
-        closed) or the ``NeedTANResponse`` to show the user. In the latter
-        case the dialog stays open and the caller MUST call
-        :meth:`complete_tan` next.
+        left open for the caller) or the ``NeedTANResponse`` to show the
+        user. In the latter case the dialog stays open and the caller MUST
+        call :meth:`complete_tan` next.
 
         Raises ``NoTanMechanismError`` (carrying every response code observed
         so far) if the sync was rejected without a supported two-step
@@ -532,12 +535,13 @@ class FinTsAtruviaClient:
         For SecureGo+ (decoupled) the user confirms in the app and *tan* stays
         ``""``; chipTAN / SMS-TAN users pass the TAN string.
 
-        Returns ``None`` once the login is complete (accounts cached, dialog
-        closed). Returns a new ``NeedTANResponse`` when more confirmation is
-        needed: the bank has not seen the app confirmation yet (response code
-        3956), or — after a sync dialog — the fresh dialog asks for SCA
-        again. The caller then shows the prompt again and calls this method
-        once more.
+        Returns ``None`` once the login is complete: the accounts are cached
+        and the standing dialog is left open and authenticated for the
+        caller's jobs (end it with :meth:`close_dialog` or :meth:`close`).
+        Returns a new ``NeedTANResponse`` when more confirmation is needed:
+        the bank has not seen the app confirmation yet (response code 3956),
+        or — after a sync dialog — the fresh dialog asks for SCA again. The
+        caller then shows the prompt again and calls this method once more.
 
         Raises ``AuthRejectedError`` if the bank rejects the authentication.
         """
@@ -548,8 +552,12 @@ class FinTsAtruviaClient:
                 return result
             client.init_tan_response = None
             if client.system_id != SYSTEM_ID_UNASSIGNED:
+                # Stay in this dialog: it is the one the user just
+                # authenticated. A fresh dialog can demand SCA all over again
+                # (the bank grants the 90-day exemption per client, and not
+                # necessarily right away), so the caller fetches its data here
+                # and ends the dialog afterwards via close_dialog() / close().
                 self._cached_accounts = client.get_sepa_accounts()
-                self._close_standing_dialog()
                 return None
             # Sync dialog: Atruvia hands out the system id only with the TAN
             # completion. A sync dialog is not meant to carry business jobs,

@@ -190,9 +190,15 @@ def test_init_system_id_one_step_sync_assigns_system_id_and_caches_accounts():
     sync = bank.sync_dialogs_opened[0]
     assert isinstance(sync.init_segments[0], HKSYN3)
     assert sync.ended
-    assert bank._standing_dialog is None
+    # The account dialog stays open for the caller (config flow closes the
+    # client in _finish_setup); a fresh dialog could demand SCA again.
+    assert bank._standing_dialog is bank.standing_dialogs_opened[0]
+    assert not bank._standing_dialog.ended
     assert bank.get_sepa_accounts_calls == 1
     assert client.get_accounts() == ["acc"]
+    client.close_dialog()
+    assert bank.standing_dialogs_opened[0].ended
+    assert bank._standing_dialog is None
 
 
 def test_sync_rejected_dialog_is_dropped_without_hkend():
@@ -284,6 +290,7 @@ def test_init_system_id_skips_sync_when_state_already_has_system_id():
     assert bank.sync_dialogs_opened == []
     assert len(bank.standing_dialogs_opened) == 1
     assert bank.get_sepa_accounts_calls == 1
+    assert bank._standing_dialog is bank.standing_dialogs_opened[0]
 
 
 def test_init_system_id_returns_challenge_from_standing_dialog():
@@ -403,6 +410,12 @@ def _client_with_open_dialog(bank: _Bank) -> FinTsAtruviaClient:
     return client
 
 
+def _client_with_bank(bank: _Bank) -> FinTsAtruviaClient:
+    client = _client()
+    client._client = bank
+    return client
+
+
 def test_complete_tan_returns_pending_challenge_when_app_not_yet_confirmed():
     """3956: the user pressed Weiter before confirming; dialog must stay open."""
     pending = _challenge()
@@ -432,8 +445,8 @@ def test_complete_tan_adopts_system_id_from_sync_dialog_then_opens_fresh_dialog(
     assert bank.system_id == "SYS1"
     assert sync_dialog.ended
     assert len(bank.standing_dialogs_opened) == 1
-    assert bank.standing_dialogs_opened[0].ended
-    assert bank._standing_dialog is None
+    assert not bank.standing_dialogs_opened[0].ended
+    assert bank._standing_dialog is bank.standing_dialogs_opened[0]
     assert bank.get_sepa_accounts_calls == 1
     assert client.get_accounts() == ["acc"]
 
@@ -464,9 +477,24 @@ def test_complete_tan_with_known_system_id_fetches_accounts_in_same_dialog():
 
     assert result is None
     assert bank.get_sepa_accounts_calls == 1
-    assert dialog.ended
-    assert bank._standing_dialog is None
+    # Stay in the dialog the user just authenticated: the coordinator fetches
+    # balances and transactions here and ends it afterwards.
+    assert not dialog.ended
+    assert bank._standing_dialog is dialog
     assert bank.standing_dialogs_opened == []
+
+
+def test_open_dialog_and_cache_accounts_closes_dialog_when_account_fetch_raises():
+    bank = _Bank(system_id="SYS1")
+    boom = RuntimeError("HKSPA failed")
+    bank.get_sepa_accounts = MagicMock(side_effect=boom)
+    client = _client_with_bank(bank)
+
+    with pytest.raises(RuntimeError):
+        client._open_dialog_and_cache_accounts(bank)
+
+    assert bank.standing_dialogs_opened[0].ended
+    assert bank._standing_dialog is None
 
 
 def test_complete_tan_raises_when_bank_assigns_no_system_id_after_tan():
@@ -573,12 +601,6 @@ def test_hitans_versions_returns_empty_list_when_bpd_access_raises():
 # ---------------------------------------------------------------------------
 # open_dialog / close_dialog
 # ---------------------------------------------------------------------------
-
-
-def _client_with_bank(bank: _Bank) -> FinTsAtruviaClient:
-    client = _client()
-    client._client = bank
-    return client
 
 
 def test_open_dialog_enters_standing_dialog_and_returns_none():
