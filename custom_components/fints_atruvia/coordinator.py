@@ -300,7 +300,7 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
         if challenge is not None:
             raise TanRequiredError(challenge)
 
-    async def _async_update_data(self) -> dict:
+    async def _async_update_data(self) -> dict:  # noqa: PLR0915 - one poll = open, fetch, close, four error mappings
         """Fetch data for all selected accounts, compute stats, emit events."""
         result: dict = {}
         new_events: list[dict] = []
@@ -386,6 +386,8 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
             # python-fints client (blocked PIN object); hand over to HA's
             # reauth flow for new credentials.
             await self.hass.async_add_executor_job(client.close)
+            self.is_2fa_pending = False
+            self._tan_response = None
             _LOGGER.error(  # noqa: TRY400 - log hygiene: bare response codes only, no bank text (SECURITY.md §10)
                 "FinTS login rejected by bank (codes: %s)",
                 ",".join(err.codes) or "none",
@@ -402,6 +404,8 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
             # exception type chain (bank text may hide in messages); the
             # original exception is still chained via ``raise from``.
             await self.hass.async_add_executor_job(client.close)
+            self.is_2fa_pending = False
+            self._tan_response = None
             _LOGGER.error(  # noqa: TRY400 - log hygiene: no python-fints traceback (SECURITY.md §10)
                 "FinTS update failed: %s", describe_exception_chain(err)
             )

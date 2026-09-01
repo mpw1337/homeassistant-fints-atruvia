@@ -149,6 +149,8 @@ async def test_rejected_login_raises_auth_failed_and_drops_client(hass, caplog):
     """Wrong PIN: no retry loop (the bank locks after a few attempts)."""
     coordinator = _make_coordinator(hass, [_IBAN1])
     coordinator.data = {"prior": "state"}
+    coordinator.is_2fa_pending = True
+    coordinator._tan_response = SimpleNamespace()
     coordinator._client.open_dialog.side_effect = AuthRejectedError(codes=("9942",))
 
     with pytest.raises(ConfigEntryAuthFailed):
@@ -157,11 +159,14 @@ async def test_rejected_login_raises_auth_failed_and_drops_client(hass, caplog):
     coordinator._client.close.assert_called_once()
     assert "9942" in caplog.text
     assert coordinator.is_2fa_pending is False
+    assert coordinator._tan_response is None
 
 
 async def test_generic_failure_drops_client_and_logs_exception_chain(hass, caplog):
     """python-fints' blocked-PIN Exception must not survive into the next poll."""
     coordinator = _make_coordinator(hass, [_IBAN1])
+    coordinator.is_2fa_pending = True
+    coordinator._tan_response = SimpleNamespace()
     blocked = Exception("Refusing to use PIN after block")
     blocked.__cause__ = RuntimeError("PIN wrong?")
     coordinator._client.get_accounts.side_effect = blocked
@@ -173,6 +178,8 @@ async def test_generic_failure_drops_client_and_logs_exception_chain(hass, caplo
     coordinator._client.close_dialog.assert_not_called()
     assert "FinTS update failed: Exception <- RuntimeError" in caplog.text
     assert "Refusing" not in caplog.text
+    assert coordinator.is_2fa_pending is False
+    assert coordinator._tan_response is None
 
 
 async def test_no_lost_events_when_later_account_fails(hass):

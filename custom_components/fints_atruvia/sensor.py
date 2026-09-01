@@ -115,7 +115,7 @@ class FintsBankingSensor(CoordinatorEntity[FintsBankingCoordinator], SensorEntit
         the recorder or the state API. The Lovelace card detects the
         missing attribute and falls back to a balance-only view.
         """
-        if not self.coordinator.data:
+        if self.coordinator.data is None:
             return {}
         account_data = self.coordinator.data.get(self._iban, {})
         attrs: dict = {
@@ -175,7 +175,7 @@ class _FintsStatsSensor(CoordinatorEntity[FintsBankingCoordinator], SensorEntity
 
     @property
     def extra_state_attributes(self) -> dict:
-        if not self.coordinator.data:
+        if self.coordinator.data is None:
             return {}
         stats = self.coordinator.data.get(self._iban, {}).get("stats", {})
         return {
