@@ -345,10 +345,15 @@ class FinTsAtruviaClient:
         if self._client is None:
             return None
         try:
-            return self._client.deconstruct(including_private=True)
+            blob = self._client.deconstruct(including_private=True)
         except Exception:
             _LOGGER.debug("Failed to deconstruct FinTS state", exc_info=True)
             return None
+        # A client rebuilt after close() (the coordinator does that after a
+        # failed poll) must start from this state, not from the blob loaded
+        # at construction.
+        self._fints_state = blob
+        return blob
 
     def close(self) -> None:
         """Drop the underlying client. Forces a fresh login (with PIN) next time."""
@@ -560,6 +565,42 @@ class FinTsAtruviaClient:
         except Exception:
             self._close_standing_dialog()
             raise
+
+    def open_dialog(self) -> NeedTANResponse | None:
+        """Open the standing dialog for a poll, or report the SCA it demands.
+
+        Idempotent: a dialog left open by :meth:`complete_tan` is reused so
+        the fetch after a confirmed challenge runs in the dialog the user
+        authenticated — a fresh one could demand SCA all over again.
+
+        Returns the challenge if the bank asks for SCA at dialog
+        initialisation (response 3955/0030 to the HKTAN sent with HKIDN);
+        the dialog then stays open and the caller MUST answer it through
+        :meth:`complete_tan` before any job. python-fints itself only records
+        that challenge in ``init_tan_response`` and would send the jobs
+        anyway; Atruvia refuses them (9340), which python-fints then mistakes
+        for a wrong PIN. Returns ``None`` when the dialog is open and
+        authenticated.
+
+        Raises ``AuthRejectedError`` if the bank rejects the login. The
+        python-fints client is dropped first: it has blocked its PIN object,
+        so the next attempt needs a fresh one (see :meth:`close`).
+        """
+        client = self._get_client()
+        if client._standing_dialog is not None:  # noqa: SLF001 - no public accessor
+            return None
+        client.init_tan_response = None
+        try:
+            client.__enter__()
+        except (FinTSClientPINError, FinTSClientTemporaryAuthError) as exc:
+            codes = tuple(getattr(client, "observed_error_codes", ()))
+            self.close()
+            raise AuthRejectedError(codes=codes) from exc
+        return client.init_tan_response
+
+    def close_dialog(self) -> None:
+        """End the standing dialog (HKEND) if one is open; the client stays usable."""
+        self._close_standing_dialog()
 
     def get_accounts(self) -> list[SEPAAccount]:
         """Return all SEPA accounts accessible with the configured credentials.

@@ -161,6 +161,9 @@ class _Bank:
             raise self._send_tan_result
         return self._send_tan_result
 
+    def deconstruct(self, including_private=False):  # noqa: FBT002 - mirrors python-fints' signature
+        return b"blob-private" if including_private else b"blob"
+
 
 def _run_init(bank: _Bank):
     client = _client()
@@ -563,6 +566,114 @@ def test_hitans_versions_returns_empty_list_when_bpd_access_raises():
             raise RuntimeError(msg)
 
     assert _hitans_versions(_NoBpd()) == []
+
+
+# ---------------------------------------------------------------------------
+# open_dialog / close_dialog
+# ---------------------------------------------------------------------------
+
+
+def _client_with_bank(bank: _Bank) -> FinTsAtruviaClient:
+    client = _client()
+    client._client = bank
+    return client
+
+
+def test_open_dialog_enters_standing_dialog_and_returns_none():
+    bank = _Bank(system_id="SYS1")
+    client = _client_with_bank(bank)
+
+    assert client.open_dialog() is None
+
+    assert len(bank.standing_dialogs_opened) == 1
+    assert bank._standing_dialog is bank.standing_dialogs_opened[0]
+    assert not bank._standing_dialog.ended
+    assert bank.get_sepa_accounts_calls == 0
+
+
+def test_open_dialog_returns_init_challenge_and_keeps_dialog_open():
+    """3955 at dialog init: python-fints only records it; we must stop here."""
+    bank = _Bank(system_id="SYS1")
+    challenge = _challenge()
+    bank._standing_template = _Dialog(bank, challenge=challenge)
+    client = _client_with_bank(bank)
+
+    assert client.open_dialog() is challenge
+
+    assert bank._standing_dialog is bank._standing_template
+    assert not bank._standing_template.ended
+    assert bank.get_sepa_accounts_calls == 0
+
+
+def test_open_dialog_is_idempotent_while_dialog_is_open():
+    """After complete_tan the authenticated dialog is reused, not reopened."""
+    bank = _Bank(system_id="SYS1")
+    client = _client_with_bank(bank)
+    client.open_dialog()
+    dialog = bank._standing_dialog
+
+    assert client.open_dialog() is None
+
+    assert bank._standing_dialog is dialog
+    assert len(bank.standing_dialogs_opened) == 1
+
+
+def test_open_dialog_clears_stale_init_tan_response_before_entering():
+    bank = _Bank(system_id="SYS1")
+    bank.init_tan_response = _challenge()  # leftover from an earlier dialog
+    client = _client_with_bank(bank)
+
+    assert client.open_dialog() is None
+
+
+def test_open_dialog_raises_auth_rejected_and_drops_client():
+    """Wrong PIN at login: report the codes and forget the blocked client."""
+    pin_error = FinTSClientPINError("Error during dialog initialization, PIN wrong?")
+    bank = _Bank(system_id="SYS1")
+    bank._standing_template = _Dialog(bank, raises=pin_error)
+    bank.observed_error_codes = ["9942"]
+    client = _client_with_bank(bank)
+
+    with pytest.raises(AuthRejectedError) as exc_info:
+        client.open_dialog()
+
+    assert exc_info.value.codes == ("9942",)
+    assert exc_info.value.__cause__ is pin_error
+    assert client._client is None
+    assert bank._standing_dialog is None
+
+
+def test_close_dialog_ends_standing_dialog_and_keeps_client():
+    bank = _Bank(system_id="SYS1")
+    client = _client_with_bank(bank)
+    client.open_dialog()
+    dialog = bank._standing_dialog
+
+    client.close_dialog()
+
+    assert dialog.ended
+    assert bank._standing_dialog is None
+    assert client._client is bank
+
+
+def test_close_dialog_is_noop_without_dialog_or_client():
+    bank = _Bank(system_id="SYS1")
+    client = _client_with_bank(bank)
+    client.close_dialog()  # nothing open
+
+    assert bank._standing_dialog is None
+
+    client._client = None
+    client.close_dialog()  # nothing built
+
+
+def test_deconstruct_refreshes_stored_fints_state():
+    """A client rebuilt after close() must start from the latest state."""
+    bank = _Bank(system_id="SYS1")
+    client = _client_with_bank(bank)
+
+    assert client.deconstruct() == b"blob-private"
+    assert client._fints_state == b"blob-private"
 
 
 # ---------------------------------------------------------------------------
