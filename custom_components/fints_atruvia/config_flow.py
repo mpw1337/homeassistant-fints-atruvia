@@ -32,6 +32,7 @@ from .api import (
     FinTsAtruviaClient,
     InvalidUrlError,
     NoTanMechanismError,
+    describe_exception_chain,
 )
 from .storage import (
     CredentialStoreError,
@@ -286,7 +287,7 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
             # bank-response content (HBCI segments can include account
             # numbers) — keep that out of HA logs.
             _LOGGER.error(  # noqa: TRY400 - log hygiene: no python-fints traceback (SECURITY.md §10)
-                "FinTS system-ID init failed: %s", type(exc).__name__
+                "FinTS system-ID init failed: %s", describe_exception_chain(exc)
             )
             return self.async_show_form(
                 step_id="user",
@@ -335,7 +336,7 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
                 )
             except Exception as exc:  # noqa: BLE001
                 _LOGGER.error(  # noqa: TRY400 - log hygiene: no python-fints traceback (SECURITY.md §10)
-                    "TAN challenge failed: %s", type(exc).__name__
+                    "TAN challenge failed: %s", describe_exception_chain(exc)
                 )
                 return self.async_show_form(
                     step_id="2fa",
@@ -382,7 +383,7 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
             accounts = await self.hass.async_add_executor_job(self._client.get_accounts)
         except Exception as exc:  # noqa: BLE001
             _LOGGER.error(  # noqa: TRY400 - log hygiene: no python-fints traceback (SECURITY.md §10)
-                "Account fetch failed: %s", type(exc).__name__
+                "Account fetch failed: %s", describe_exception_chain(exc)
             )
             return self.async_show_form(
                 step_id="accounts",

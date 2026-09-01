@@ -29,7 +29,12 @@ from . import (
     EVENT_NEW_TRANSACTION,
     STATS_WINDOW_DAYS,
 )
-from .api import FinTsAtruviaClient, InvalidUrlError, TanRequiredError
+from .api import (
+    FinTsAtruviaClient,
+    InvalidUrlError,
+    TanRequiredError,
+    describe_exception_chain,
+)
 from .storage import (
     CredentialStoreError,
     FintsCredentialStore,
@@ -351,10 +356,10 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
             raise ConfigEntryAuthFailed(str(err)) from err
         except Exception as err:
             # Bank responses may carry sensitive content in their string
-            # form. Log only the exception type; the original exception is
-            # still chained via ``raise from`` for debug-level traceback.
+            # form. Log only the exception type chain; the original exception
+            # is still chained via ``raise from`` for debug-level traceback.
             _LOGGER.error(  # noqa: TRY400 - log hygiene: no python-fints traceback (SECURITY.md §10)
-                "FinTS update failed: %s", type(err).__name__
+                "FinTS update failed: %s", describe_exception_chain(err)
             )
             raise UpdateFailed(_MSG_UPDATE_FAILED) from err
 

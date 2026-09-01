@@ -180,6 +180,35 @@ def _hitans_versions(client: FinTS3PinTanClient) -> list[int]:
         return []
 
 
+# Longest exception chain worth printing: wrapper -> python-fints error ->
+# blocked-PIN Exception -> original response error is four; six leaves room.
+_CHAIN_MAX_DEPTH = 6
+
+
+def describe_exception_chain(exc: BaseException) -> str:
+    """Return the exception type names along ``__cause__`` / ``__context__``.
+
+    python-fints wraps unexpected errors in ``FinTSDialogInitError`` and, once
+    it has blocked its ``Password`` object after a PIN-error code, replaces the
+    ``FinTSClientPINError`` with a bare ``Exception("Refusing to use PIN after
+    block")`` while ending the dialog. The outermost type therefore says
+    nothing about what happened; the chain does. Type names only — messages
+    may quote bank responses (log hygiene, SECURITY.md §10). ``__cause__``
+    wins over ``__context__`` (explicit ``raise ... from``), the walk is
+    cycle-safe and capped at ``_CHAIN_MAX_DEPTH`` entries.
+    """
+    names: list[str] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        if len(names) >= _CHAIN_MAX_DEPTH:
+            break
+        seen.add(id(current))
+        names.append(type(current).__name__)
+        current = current.__cause__ or current.__context__
+    return " <- ".join(names)
+
+
 class _ExtendedFinTSClient(FinTS3PinTanClient):
     """python-fints subclass that returns the full HISAL segment from get_balance.
 

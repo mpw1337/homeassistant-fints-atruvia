@@ -17,6 +17,7 @@ from custom_components.fints_atruvia.api import (
     NoTanMechanismError,
     _ExtendedFinTSClient,
     _hitans_versions,
+    describe_exception_chain,
 )
 
 _URL = "https://example.test/fints"
@@ -545,3 +546,65 @@ def test_hitans_versions_returns_empty_list_when_bpd_access_raises():
             raise RuntimeError(msg)
 
     assert _hitans_versions(_NoBpd()) == []
+
+
+# ---------------------------------------------------------------------------
+# describe_exception_chain
+# ---------------------------------------------------------------------------
+
+
+def test_describe_exception_chain_follows_cause_then_context():
+    """The wrapper type alone says nothing; the chain names the real error."""
+    try:
+        try:
+            raise FinTSClientPINError("PIN wrong?")  # noqa: TRY301, TRY003, EM101 - mirrors python-fints
+        except FinTSClientPINError:
+            raise Exception("Refusing to use PIN after block")  # noqa: TRY002, TRY003, EM101, B904 - mirrors python-fints
+    except Exception as outer:  # noqa: BLE001
+        wrapped = RuntimeError("Couldn't establish dialog")
+        wrapped.__cause__ = outer
+        chain = describe_exception_chain(wrapped)
+
+    assert chain == "RuntimeError <- Exception <- FinTSClientPINError"
+
+
+def test_describe_exception_chain_prefers_explicit_cause_over_context():
+    context = ValueError("context")
+    cause = KeyError("cause")
+    exc = RuntimeError("outer")
+    exc.__context__ = context
+    exc.__cause__ = cause
+
+    assert describe_exception_chain(exc) == "RuntimeError <- KeyError"
+
+
+def test_describe_exception_chain_single_exception_is_just_its_name():
+    assert describe_exception_chain(ValueError("x")) == "ValueError"
+
+
+def test_describe_exception_chain_is_cycle_safe_and_depth_capped():
+    first = RuntimeError("a")
+    second = RuntimeError("b")
+    first.__cause__ = second
+    second.__cause__ = first  # cycle
+
+    assert describe_exception_chain(first) == "RuntimeError <- RuntimeError"
+
+    head = RuntimeError("0")
+    current = head
+    for i in range(1, 20):
+        nxt = RuntimeError(str(i))
+        current.__cause__ = nxt
+        current = nxt
+
+    assert len(describe_exception_chain(head).split(" <- ")) == 6
+
+
+def test_describe_exception_chain_never_includes_messages():
+    exc = RuntimeError("DE89370400440532013000 secret text")
+    exc.__cause__ = ValueError("1234 pin")
+
+    chain = describe_exception_chain(exc)
+
+    assert "DE89" not in chain
+    assert "1234" not in chain
