@@ -7,6 +7,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from homeassistant.components.persistent_notification import (
+    _async_get_or_create_notifications,
+)
+from homeassistant.components.persistent_notification import (
+    async_create as pn_async_create,
+)
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import UpdateFailed
 from pytest_homeassistant_custom_component.common import (
@@ -28,6 +34,8 @@ from custom_components.fints_atruvia.coordinator import (
     FintsBankingCoordinator,
     _transaction_hash,
 )
+
+_REAUTH_NOTIFICATION = "fints_atruvia_reauth"
 
 _IBAN1 = "DE11500105175407324931"
 _IBAN2 = "DE02500105170137075030"
@@ -59,6 +67,12 @@ def _make_coordinator(hass, selected_accounts: list[str]) -> FintsBankingCoordin
     # A MagicMock return value is truthy and would read as an SCA challenge.
     coordinator._client.open_dialog.return_value = None
     return coordinator
+
+
+def _raise_reauth_notification(hass) -> None:
+    """Put the re-auth notification up, as a pending challenge would have."""
+    pn_async_create(hass, "x", "y", notification_id=_REAUTH_NOTIFICATION)
+    assert _REAUTH_NOTIFICATION in _async_get_or_create_notifications(hass)
 
 
 def _account(iban: str) -> SimpleNamespace:
@@ -111,6 +125,43 @@ async def test_tan_required_with_existing_data_returns_last_good(hass):
     assert coordinator.is_2fa_pending is True
 
 
+async def test_poll_with_unanswered_challenge_leaves_the_bank_alone(hass):
+    """Second poll before the button was pressed: do not touch the bank at all.
+
+    The dialog the challenge belongs to is still open and unauthenticated.
+    Sending jobs into it earns a 9340, which python-fints reads as a wrong
+    PIN — it would take the re-auth button away while the notification still
+    asks the user to press it.
+    """
+    coordinator = _make_coordinator(hass, [_IBAN1])
+    coordinator.data = {"prior": "state"}
+    challenge = SimpleNamespace(name="pending challenge")
+    coordinator.is_2fa_pending = True
+    coordinator._tan_response = challenge
+
+    result = await coordinator._async_update_data()
+
+    assert result is coordinator.data
+    assert coordinator.is_2fa_pending is True
+    assert coordinator._tan_response is challenge
+    assert _REAUTH_NOTIFICATION in _async_get_or_create_notifications(hass)
+    coordinator._client.open_dialog.assert_not_called()
+    coordinator._client.get_accounts.assert_not_called()
+    coordinator._client.close_dialog.assert_not_called()
+    coordinator._client.close.assert_not_called()
+
+
+async def test_poll_with_unanswered_challenge_returns_empty_without_data(hass):
+    """Same short circuit on a restart: no data yet, so the entities need ``{}``."""
+    coordinator = _make_coordinator(hass, [_IBAN1])
+    coordinator.is_2fa_pending = True
+    coordinator._tan_response = SimpleNamespace(name="pending challenge")
+
+    assert await coordinator._async_update_data() == {}
+
+    coordinator._client.open_dialog.assert_not_called()
+
+
 async def test_successful_poll_opens_one_dialog_and_closes_it_after_the_fetch(hass):
     coordinator = _make_coordinator(hass, [_IBAN1])
     coordinator._seen_initialised = True
@@ -149,9 +200,13 @@ async def test_rejected_login_raises_auth_failed_and_drops_client(hass, caplog):
     """Wrong PIN: no retry loop (the bank locks after a few attempts)."""
     coordinator = _make_coordinator(hass, [_IBAN1])
     coordinator.data = {"prior": "state"}
+    # A stored challenge would short-circuit the poll before it reaches the
+    # bank (see test_poll_with_unanswered_challenge_leaves_the_bank_alone);
+    # what has to hold here is that the failure force-clears the flag.
     coordinator.is_2fa_pending = True
-    coordinator._tan_response = SimpleNamespace()
+    coordinator._tan_response = None
     coordinator._client.open_dialog.side_effect = AuthRejectedError(codes=("9942",))
+    _raise_reauth_notification(hass)
 
     with pytest.raises(ConfigEntryAuthFailed):
         await coordinator._async_update_data()
@@ -160,16 +215,20 @@ async def test_rejected_login_raises_auth_failed_and_drops_client(hass, caplog):
     assert "9942" in caplog.text
     assert coordinator.is_2fa_pending is False
     assert coordinator._tan_response is None
+    # The button is gone with the client, so the notification asking the user
+    # to press it must go too.
+    assert _REAUTH_NOTIFICATION not in _async_get_or_create_notifications(hass)
 
 
 async def test_generic_failure_drops_client_and_logs_exception_chain(hass, caplog):
     """python-fints' blocked-PIN Exception must not survive into the next poll."""
     coordinator = _make_coordinator(hass, [_IBAN1])
     coordinator.is_2fa_pending = True
-    coordinator._tan_response = SimpleNamespace()
+    coordinator._tan_response = None
     blocked = Exception("Refusing to use PIN after block")
     blocked.__cause__ = RuntimeError("PIN wrong?")
     coordinator._client.get_accounts.side_effect = blocked
+    _raise_reauth_notification(hass)
 
     with pytest.raises(UpdateFailed):
         await coordinator._async_update_data()
@@ -180,6 +239,7 @@ async def test_generic_failure_drops_client_and_logs_exception_chain(hass, caplo
     assert "Refusing" not in caplog.text
     assert coordinator.is_2fa_pending is False
     assert coordinator._tan_response is None
+    assert _REAUTH_NOTIFICATION not in _async_get_or_create_notifications(hass)
 
 
 async def test_no_lost_events_when_later_account_fails(hass):
@@ -228,6 +288,10 @@ async def test_no_lost_events_when_later_account_fails(hass):
 
     # Second poll: both accounts succeed now. The transaction discarded above
     # must still be reported as new — it must not have been silently marked seen.
+    # The user answered the challenge in between; clearing the pending state is
+    # what async_complete_reauth does before it refreshes.
+    coordinator.is_2fa_pending = False
+    coordinator._tan_response = None
     iban2_should_fail = False
     await coordinator._async_update_data()
     await hass.async_block_till_done()
@@ -373,3 +437,31 @@ async def test_complete_reauth_clears_pending_and_refreshes_on_success(hass):
     assert coordinator.is_2fa_pending is False
     assert coordinator._tan_response is None
     coordinator.async_refresh.assert_awaited_once()
+
+
+async def test_complete_reauth_rejected_login_starts_the_reauth_flow(hass, caplog):
+    """A rejected TAN completion must reach HA's reauth flow, not just a toast.
+
+    ``complete_tan`` dropped the client with the blocked PIN object, so the
+    pending 2FA state is meaningless; retrying the poll would only earn
+    another rejection (Atruvia locks the access after a few).
+    """
+    coordinator = _make_coordinator(hass, [_IBAN1])
+    coordinator._tan_response = MagicMock(name="challenge")
+    coordinator.is_2fa_pending = True
+    coordinator._client.complete_tan.side_effect = AuthRejectedError(codes=("9942",))
+    coordinator.async_refresh = AsyncMock()
+    # MockConfigEntry.async_start_reauth really schedules a flow; the mock
+    # keeps this test to the coordinator.
+    coordinator.config_entry.async_start_reauth = MagicMock()
+    _raise_reauth_notification(hass)
+
+    with pytest.raises(ConfigEntryAuthFailed):
+        await coordinator.async_complete_reauth()
+
+    assert coordinator.is_2fa_pending is False
+    assert coordinator._tan_response is None
+    assert _REAUTH_NOTIFICATION not in _async_get_or_create_notifications(hass)
+    coordinator.config_entry.async_start_reauth.assert_called_once_with(hass)
+    coordinator.async_refresh.assert_not_awaited()
+    assert "9942" in caplog.text

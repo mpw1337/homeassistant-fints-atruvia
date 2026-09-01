@@ -19,7 +19,7 @@ from __future__ import annotations
 import datetime
 import logging
 from decimal import Decimal, InvalidOperation
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 
 from fints.client import SYSTEM_ID_UNASSIGNED, FinTS3PinTanClient, NeedTANResponse
 from fints.exceptions import FinTSClientPINError, FinTSClientTemporaryAuthError
@@ -502,10 +502,7 @@ class FinTsAtruviaClient:
                 return challenge
             return self._open_dialog_and_cache_accounts(client)
         except (FinTSClientPINError, FinTSClientTemporaryAuthError) as exc:
-            self._close_standing_dialog()
-            raise AuthRejectedError(
-                codes=tuple(getattr(client, "observed_error_codes", ()))
-            ) from exc
+            self._raise_auth_rejected(client, exc)
 
     def _close_standing_dialog(self) -> None:
         """Close the client's standing dialog if one is open."""
@@ -518,6 +515,28 @@ class FinTsAtruviaClient:
             self._client.__exit__(None, None, None)
         except Exception:
             _LOGGER.debug("Error closing FinTS dialog", exc_info=True)
+        finally:
+            if self._client is not None:
+                # python-fints clears the attribute only after the inner
+                # dialog.__exit__ returned, so a refused HKEND (timed-out
+                # dialog, blocked PIN, dropped connection) would leave the
+                # dead dialog registered — and open_dialog() keys its
+                # idempotency off exactly this attribute.
+                self._client._standing_dialog = None  # noqa: SLF001 - no public accessor
+
+    def _raise_auth_rejected(
+        self, client: FinTS3PinTanClient, exc: Exception
+    ) -> NoReturn:
+        """Drop the rejected client and re-raise as :class:`AuthRejectedError`.
+
+        The codes are read before the client goes, since ``close()`` forgets
+        it. Dropping rather than just ending the dialog is the point: after a
+        9xxx python-fints has blocked its ``Password`` object, and every later
+        use of that client dies with a bare "Refusing to use PIN after block".
+        """
+        codes = tuple(getattr(client, "observed_error_codes", ()))
+        self.close()
+        raise AuthRejectedError(codes=codes) from exc
 
     @staticmethod
     def _adopt_system_id(client: FinTS3PinTanClient, response: Any) -> None:
@@ -566,10 +585,7 @@ class FinTsAtruviaClient:
             self._adopt_system_id(client, result)
             return self._open_dialog_and_cache_accounts(client)
         except (FinTSClientPINError, FinTSClientTemporaryAuthError) as exc:
-            self._close_standing_dialog()
-            raise AuthRejectedError(
-                codes=tuple(getattr(client, "observed_error_codes", ()))
-            ) from exc
+            self._raise_auth_rejected(client, exc)
         except Exception:
             self._close_standing_dialog()
             raise
@@ -579,7 +595,11 @@ class FinTsAtruviaClient:
 
         Idempotent: a dialog left open by :meth:`complete_tan` is reused so
         the fetch after a confirmed challenge runs in the dialog the user
-        authenticated — a fresh one could demand SCA all over again.
+        authenticated — a fresh one could demand SCA all over again. A dialog
+        left open by a challenge that is still unanswered reports that
+        challenge again instead: it is open but not authenticated, and jobs
+        sent into it would be refused (9340). ``complete_tan`` clears
+        ``init_tan_response`` on success, which is what separates the two.
 
         Returns the challenge if the bank asks for SCA at dialog
         initialisation (response 3955/0030 to the HKTAN sent with HKIDN);
@@ -598,14 +618,12 @@ class FinTsAtruviaClient:
         """
         client = self._get_client()
         if client._standing_dialog is not None:  # noqa: SLF001 - no public accessor
-            return None
+            return client.init_tan_response
         client.init_tan_response = None
         try:
             client.__enter__()
         except (FinTSClientPINError, FinTSClientTemporaryAuthError) as exc:
-            codes = tuple(getattr(client, "observed_error_codes", ()))
-            self.close()
-            raise AuthRejectedError(codes=codes) from exc
+            self._raise_auth_rejected(client, exc)
         except Exception:
             # Half-entered client (python-fints assigns _standing_dialog before
             # init runs): drop the dead dialog so the next open_dialog() does

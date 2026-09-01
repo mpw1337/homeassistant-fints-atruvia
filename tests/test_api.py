@@ -52,7 +52,7 @@ class _Response:
 class _Dialog:
     """Scripted FinTSDialog: what the bank answers to this dialog's init."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - one knob per scripted dialog behaviour
         self,
         bank: _Bank,
         *,
@@ -60,12 +60,14 @@ class _Dialog:
         selects: str | None = None,
         challenge: NeedTANResponse | None = None,
         raises: Exception | None = None,
+        end_raises: Exception | None = None,
     ) -> None:
         self._bank = bank
         self._system_id = system_id
         self._selects = selects
         self._challenge = challenge
         self._raises = raises
+        self._end_raises = end_raises
         self.init_segments: tuple | None = None
         self.entered = 0
         self.ended = False
@@ -93,6 +95,10 @@ class _Dialog:
 
     def end(self):
         self.ended = True
+        if self._end_raises is not None:
+            # A bank that refuses HKEND (timed-out dialog, blocked PIN,
+            # dropped connection).
+            raise self._end_raises
 
 
 class _Bank:
@@ -392,6 +398,8 @@ def test_init_system_id_raises_auth_rejected_error_with_observed_codes():
 
     assert exc_info.value.codes == ("9942",)
     assert exc_info.value.__cause__ is pin_error
+    # The bank blocked the Password object: the client must not survive.
+    assert client._client is None
 
 
 # ---------------------------------------------------------------------------
@@ -524,6 +532,9 @@ def test_complete_tan_raises_auth_rejected_error_and_still_closes_dialog():
     assert exc_info.value.__cause__ is pin_error
     assert dialog.ended
     assert bank._standing_dialog is None
+    # Same cleanup depth as open_dialog: the blocked PIN object must not
+    # survive into the next poll (the button path reaches this one).
+    assert client._client is None
 
 
 # ---------------------------------------------------------------------------
@@ -642,6 +653,26 @@ def test_open_dialog_is_idempotent_while_dialog_is_open():
     assert len(bank.standing_dialogs_opened) == 1
 
 
+def test_open_dialog_hands_back_the_still_unanswered_challenge():
+    """A second poll before the button was pressed must not reuse the dialog.
+
+    The challenge path leaves the dialog open too, so keying idempotency off
+    "a dialog exists" alone would report an authenticated dialog, send the
+    jobs into it and collect a 9340 — the very failure this release fixes.
+    """
+    bank = _Bank(system_id="SYS1")
+    challenge = _challenge()
+    bank._standing_template = _Dialog(bank, challenge=challenge)
+    client = _client_with_bank(bank)
+    assert client.open_dialog() is challenge
+
+    assert client.open_dialog() is challenge
+
+    assert len(bank.standing_dialogs_opened) == 1
+    assert bank._standing_dialog is bank._standing_template
+    assert not bank._standing_template.ended
+
+
 def test_open_dialog_clears_stale_init_tan_response_before_entering():
     bank = _Bank(system_id="SYS1")
     bank.init_tan_response = _challenge()  # leftover from an earlier dialog
@@ -690,6 +721,24 @@ def test_close_dialog_ends_standing_dialog_and_keeps_client():
     client.close_dialog()
 
     assert dialog.ended
+    assert bank._standing_dialog is None
+    assert client._client is bank
+
+
+def test_close_dialog_forgets_the_dialog_even_when_hkend_fails():
+    """A refused HKEND must not leave a dead dialog registered on the client.
+
+    python-fints clears ``_standing_dialog`` only after ``dialog.__exit__``
+    returns, so a failed end would keep the attribute pointing at the dead
+    dialog — and ``open_dialog`` keys its idempotency off exactly that.
+    """
+    bank = _Bank(system_id="SYS1")
+    bank._standing_template = _Dialog(bank, end_raises=RuntimeError("HKEND abgelehnt"))
+    client = _client_with_bank(bank)
+    client.open_dialog()
+
+    client.close_dialog()
+
     assert bank._standing_dialog is None
     assert client._client is bank
 

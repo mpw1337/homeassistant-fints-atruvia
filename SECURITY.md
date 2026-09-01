@@ -99,7 +99,7 @@ Source-Maps werden im Production-Build nicht erzeugt (`rollup.config.js: sourcem
 
 ### 10. Log-Hygiene
 
-`_LOGGER.exception(...)` wurde im Config-Flow, Coordinator und Button-Handler durch `_LOGGER.error("...: %s", type(exc).__name__)` ersetzt. Tracebacks aus `python-fints` können HBCI-Segment-Inhalte (Konto-IDs, Server-Antworten) mit sich tragen — die landen jetzt nicht mehr im HA-Log und damit nicht in Add-On-Forwardern oder Bug-Report-Uploads. Der ursprüngliche Exception-Chain bleibt für `_LOGGER.debug` erhalten.
+`_LOGGER.exception(...)` wurde im Config-Flow, Coordinator und Button-Handler durch `_LOGGER.error("...: %s", type(exc).__name__)` ersetzt. Tracebacks aus `python-fints` können HBCI-Segment-Inhalte (Konto-IDs, Server-Antworten) mit sich tragen — die landen jetzt nicht mehr im HA-Log und damit nicht in Add-On-Forwardern oder Bug-Report-Uploads. Der ursprüngliche Exception-Chain bleibt für `_LOGGER.debug` erhalten. Wo der Typ allein zu wenig sagt (Config-Flow, Coordinator), tritt `describe_exception_chain(exc)` an die Stelle von `type(exc).__name__` — es gibt ausschließlich die Typnamen der Chain aus (`Exception <- FinTSClientPINError`), nie Message, Args oder Traceback, also mit derselben Garantie.
 
 Zusätzlich wird das `%r`-Logging des Transaktions-Objekts in `api.py` nicht mehr verwendet, da `repr()` je nach python-fints-Version Verwendungszweck oder Empfänger enthalten kann.
 

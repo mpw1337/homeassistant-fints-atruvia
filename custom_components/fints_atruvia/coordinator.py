@@ -204,7 +204,9 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
         await super().async_shutdown()
         self._pin = None
         if self._client is not None:
-            self._client.close()
+            # close() sends HKEND for a standing dialog left open by a
+            # pending challenge — blocking network I/O, never on the loop.
+            await self.hass.async_add_executor_job(self._client.close)
             self._client = None
 
     # ------------------------------------------------------------------
@@ -300,6 +302,38 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
         if challenge is not None:
             raise TanRequiredError(challenge)
 
+    def _pending_challenge_result(self, challenge: object) -> dict:
+        """Record an unanswered SCA challenge and return what the poll reports.
+
+        Used both by the ``TanRequiredError`` handler and by the short circuit
+        that keeps a later poll away from the bank while the same challenge is
+        still pending. Creating the notification is idempotent — Home
+        Assistant replaces one with the same id.
+        """
+        self._tan_response = challenge
+        self.is_2fa_pending = True
+        pn_async_create(
+            self.hass,
+            title="FinTS Atruvia",
+            message=(
+                "Sparda-Bank fordert Re-Authentifizierung. "
+                "Bitte den Re-Auth-Button in der Integration drücken."
+            ),
+            notification_id="fints_atruvia_reauth",
+        )
+        if self.data is None:
+            # First poll (fresh setup or restart) and the bank wants SCA
+            # first: expose the entities anyway so the re-auth button is
+            # there to press. Sensors report unknown with 2fa_pending
+            # until the confirmation went through. Raising
+            # ConfigEntryAuthFailed here would loop: the reauth flow's
+            # own TAN reloads the entry, whose first poll asks again.
+            return {}
+        # Intentionally return last known complete data rather than a
+        # partial result. Fresh data for already-processed IBANs is
+        # discarded to avoid partial state.
+        return self.data
+
     async def _async_update_data(self) -> dict:  # noqa: PLR0915 - one poll = open, fetch, close, four error mappings
         """Fetch data for all selected accounts, compute stats, emit events."""
         result: dict = {}
@@ -308,6 +342,15 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
         if self._client is None:
             raise ConfigEntryAuthFailed(_MSG_CLIENT_NOT_INITIALISED)
         client = self._client
+
+        if self.is_2fa_pending and self._tan_response is not None:
+            # The dialog this challenge belongs to is open but not
+            # authenticated. Opening nothing and fetching nothing is the only
+            # safe move: python-fints would reuse that dialog, Atruvia would
+            # refuse the jobs (9340) and python-fints would read the refusal
+            # as a wrong PIN — taking the re-auth button away while the
+            # notification still asks the user to press it.
+            return self._pending_challenge_result(self._tan_response)
 
         try:
             # One standing dialog per poll. Without it python-fints opens a
@@ -354,32 +397,10 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
                 }
             # One HKEND per poll; also ends the dialog complete_tan left open.
             await self.hass.async_add_executor_job(client.close_dialog)
-        except TanRequiredError as e:
+        except TanRequiredError as err:
             # Dialog stays open: complete_tan continues it after the user
             # confirmed in the app and pressed the button.
-            self._tan_response = e.response
-            self.is_2fa_pending = True
-            pn_async_create(
-                self.hass,
-                title="FinTS Atruvia",
-                message=(
-                    "Sparda-Bank fordert Re-Authentifizierung. "
-                    "Bitte den Re-Auth-Button in der Integration drücken."
-                ),
-                notification_id="fints_atruvia_reauth",
-            )
-            if self.data is None:
-                # First poll (fresh setup or restart) and the bank wants SCA
-                # first: expose the entities anyway so the re-auth button is
-                # there to press. Sensors report unknown with 2fa_pending
-                # until the confirmation went through. Raising
-                # ConfigEntryAuthFailed here would loop: the reauth flow's
-                # own TAN reloads the entry, whose first poll asks again.
-                return {}
-            # Intentionally return last known complete data rather than a
-            # partial result. Fresh data for already-processed IBANs is
-            # discarded to avoid partial state.
-            return self.data
+            return self._pending_challenge_result(err.response)
         except AuthRejectedError as err:
             # Wrong or changed PIN: never retry — Atruvia locks the access
             # after a few failed logins. The wrapper already dropped the
@@ -388,6 +409,9 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
             await self.hass.async_add_executor_job(client.close)
             self.is_2fa_pending = False
             self._tan_response = None
+            # The button went unavailable with the pending state; the
+            # notification asking the user to press it must go too.
+            pn_async_dismiss(self.hass, "fints_atruvia_reauth")
             _LOGGER.error(  # noqa: TRY400 - log hygiene: bare response codes only, no bank text (SECURITY.md §10)
                 "FinTS login rejected by bank (codes: %s)",
                 ",".join(err.codes) or "none",
@@ -406,6 +430,7 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
             await self.hass.async_add_executor_job(client.close)
             self.is_2fa_pending = False
             self._tan_response = None
+            pn_async_dismiss(self.hass, "fints_atruvia_reauth")
             _LOGGER.error(  # noqa: TRY400 - log hygiene: no python-fints traceback (SECURITY.md §10)
                 "FinTS update failed: %s", describe_exception_chain(err)
             )
@@ -452,12 +477,30 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
         then stays pending and the button can be pressed again. On success
         the refresh runs immediately, inside the dialog the user just
         authenticated — a debounced request could outlive it.
+
+        Raises ``ConfigEntryAuthFailed`` if the bank rejects the login: the
+        wrapper has dropped the client with its blocked PIN object, so the
+        pending state is meaningless and only new credentials can help.
         """
         if self._tan_response is None or self._client is None:
             return False
-        follow_up = await self.hass.async_add_executor_job(
-            self._client.complete_tan, self._tan_response, tan
-        )
+        try:
+            follow_up = await self.hass.async_add_executor_job(
+                self._client.complete_tan, self._tan_response, tan
+            )
+        except AuthRejectedError as err:
+            # Same exit as a rejected poll — but this path runs from the
+            # button, which would otherwise turn it into a plain toast and
+            # leave the entry retrying against a blocked PIN.
+            self._tan_response = None
+            self.is_2fa_pending = False
+            pn_async_dismiss(self.hass, "fints_atruvia_reauth")
+            _LOGGER.error(  # noqa: TRY400 - log hygiene: bare response codes only (SECURITY.md §10)
+                "FinTS login rejected by bank (codes: %s)",
+                ",".join(err.codes) or "none",
+            )
+            self.config_entry.async_start_reauth(self.hass)
+            raise ConfigEntryAuthFailed(_MSG_AUTH_REJECTED) from err
         if follow_up is not None:
             self._tan_response = follow_up
             return False
