@@ -584,7 +584,9 @@ class FinTsAtruviaClient:
 
         Raises ``AuthRejectedError`` if the bank rejects the login. The
         python-fints client is dropped first: it has blocked its PIN object,
-        so the next attempt needs a fresh one (see :meth:`close`).
+        so the next attempt needs a fresh one (see :meth:`close`). Any other
+        error from the dialog initialisation closes the half-opened dialog
+        and propagates; the client is kept.
         """
         client = self._get_client()
         if client._standing_dialog is not None:  # noqa: SLF001 - no public accessor
@@ -596,6 +598,12 @@ class FinTsAtruviaClient:
             codes = tuple(getattr(client, "observed_error_codes", ()))
             self.close()
             raise AuthRejectedError(codes=codes) from exc
+        except Exception:
+            # Half-entered client (python-fints assigns _standing_dialog before
+            # init runs): drop the dead dialog so the next open_dialog() does
+            # not mistake it for an authenticated one.
+            self._close_standing_dialog()
+            raise
         return client.init_tan_response
 
     def close_dialog(self) -> None:

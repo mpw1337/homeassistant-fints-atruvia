@@ -142,10 +142,12 @@ class _Bank:
     def __enter__(self):
         assert self._standing_dialog is None, "Cannot double __enter__()"
         dialog = self._standing_template or _Dialog(self)
-        dialog.init()
-        dialog.__enter__()
+        # Mirrors python-fints: _standing_dialog is assigned before init()
+        # runs, so a raise here still leaves a (half-entered) dialog behind.
         self._standing_dialog = dialog
         self.standing_dialogs_opened.append(dialog)
+        dialog.init()
+        dialog.__enter__()
 
     def __exit__(self, *exc):
         self._standing_dialog.__exit__(*exc)
@@ -641,6 +643,20 @@ def test_open_dialog_raises_auth_rejected_and_drops_client():
     assert exc_info.value.__cause__ is pin_error
     assert client._client is None
     assert bank._standing_dialog is None
+
+
+def test_open_dialog_drops_half_entered_dialog_on_other_errors():
+    """A network error during init must not leave a dead standing dialog behind."""
+    bank = _Bank(system_id="SYS1")
+    boom = ConnectionError("Verbindung weg")
+    bank._standing_template = _Dialog(bank, raises=boom)
+    client = _client_with_bank(bank)
+
+    with pytest.raises(ConnectionError):
+        client.open_dialog()
+
+    assert bank._standing_dialog is None
+    assert client._client is bank
 
 
 def test_close_dialog_ends_standing_dialog_and_keeps_client():
