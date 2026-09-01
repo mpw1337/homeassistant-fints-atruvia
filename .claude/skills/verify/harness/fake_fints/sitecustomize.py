@@ -23,7 +23,11 @@ Environment:
                           D/nohitans          sync rejected, 3920 names one mechanism but no HITANS for it
                                               (BPD withheld, anonymous fetch empty too) -> NoTanMechanismError
                                               with 3920 in the observed codes
-                          D/pinerror          bank rejects dialog init with code 9942 (wrong PIN/locked access)
+                          D/pinerror          bank rejects dialog init with code 9942 (wrong PIN/locked access) —
+                                              config flow and coordinator (__enter__)
+                          D/initsca           bank demands SCA at every dialog init (3955) while set —
+                                              Sparda BW in production; data calls outside a standing
+                                              dialog raise FinTSClientPINError (models 9340 -> PIN error)
                           D/nosca             bank is SCA-exempt (3076): the one-step sync succeeds, no TAN
                           D/tanpending        send_tan answers 3956 ("not confirmed in the app yet") while set
   FAKE_FINTS_TAN=1      same as the tanmode flag, from startup
@@ -263,16 +267,45 @@ class FakeFinTS3PinTanClient:
         self._mech = mech
 
     def __enter__(self):
+        if _flag("pinerror"):
+            self.observed_error_codes.append("9942")
+            _log("DIALOG_OPEN rejected=9942")
+            msg = "Anmeldung abgelehnt (Fake-Bank pinerror flag)"
+            raise FinTSClientPINError(msg)
         dialog = _Dialog(self)
         dialog.open = True
         dialog.__enter__()
         self._standing_dialog = dialog
+        init_sca = _flag("initsca")
+        if init_sca:
+            # 3955 at dialog init: the challenge is recorded, nothing else —
+            # exactly what the real python-fints does.
+            self.init_tan_response = self._need_tan()
+            _log("INIT_SCA")
+        _log(f"DIALOG_OPEN init_sca={'yes' if init_sca else 'no'}")
         return self
 
     def __exit__(self, *exc):
         self._standing_dialog.__exit__(*exc)
         self._standing_dialog = None
+        _log("DIALOG_END")
         return False
+
+    def _require_authenticated_dialog(self):
+        """Model the bank refusing jobs outside an authenticated dialog.
+
+        With ``initsca`` set, python-fints without a standing dialog would
+        open one per call, get the 3955 challenge, send the job anyway and
+        receive 9340 — which it classifies as a PIN error. Raise that here so
+        a regression to per-call dialogs fails loudly instead of returning
+        data.
+        """
+        if _flag("initsca") and (
+            self._standing_dialog is None or self.init_tan_response is not None
+        ):
+            self.observed_error_codes.append("9340")
+            msg = "Auftrag abgelehnt (Fake-Bank initsca: dialog not authenticated)"
+            raise FinTSClientPINError(msg)
 
     def send_tan(self, response, tan=""):
         _log(f"SEND_TAN tan={'<empty>' if tan == '' else '<value>'}")
@@ -295,6 +328,7 @@ class FakeFinTS3PinTanClient:
         return r
 
     def get_sepa_accounts(self):
+        self._require_authenticated_dialog()
         return [
             SEPAAccount(iban=IBAN, bic="GENODEF1S02", accountnumber="0000123456",
                         subaccount=None, blz="99999999"),
@@ -310,6 +344,7 @@ class FakeFinTS3PinTanClient:
         ``FinTsAtruviaClient.get_balance``, which are otherwise unreachable
         from the outside.
         """
+        self._require_authenticated_dialog()
         if _tan_mode_for(account):
             return self._need_tan()
         if _flag("nohisal"):
@@ -320,6 +355,7 @@ class FakeFinTS3PinTanClient:
         return hisal
 
     def get_transactions(self, account, start_date=None, end_date=None):
+        self._require_authenticated_dialog()
         return self._need_tan() if _tan_mode_for(account) else _transactions()
 
 

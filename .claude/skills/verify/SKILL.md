@@ -77,7 +77,8 @@ next poll, no restart:
 | `nobooked` | HISAL present but without a booked balance → `ValueError("No booked balance in HISAL response for account …")` |
 | `nomech` | sync rejected without 3920 and without BPD → `NoTanMechanismError` in `api.py` with empty observed codes → config-flow error key `no_tan_mechanism` |
 | `nohitans` | sync rejected, 3920 names one mechanism but the BPD (also the anonymous fetch) has no HITANS for it → same `NoTanMechanismError` / `no_tan_mechanism`, observed codes include `3920` |
-| `pinerror` | bank rejects dialog init with code 9942 → `FinTSClientPINError` → `AuthRejectedError` in `api.py` → config-flow error key `invalid_auth` |
+| `pinerror` | bank rejects dialog init with code 9942 → `FinTSClientPINError` → `AuthRejectedError` in `api.py` → config-flow error key `invalid_auth`; on a coordinator poll → `ConfigEntryAuthFailed`, entry `setup_error` + reauth flow, no retries |
+| `initsca` | bank demands SCA at every dialog init (3955) while set — the Sparda BW behaviour; with a standing dialog the coordinator reports the challenge (notification + button) and, after the button, fetches in the same dialog. Any data call outside an authenticated dialog raises `FinTSClientPINError` (the real bank's 9340), so a regression to per-call dialogs fails the poll |
 | `nosca` | SCA-exempt login (code 3076): the one-step sync succeeds, no TAN challenge, straight to the account picker |
 | `tanpending` | `send_tan` answers 3956 (app confirmation not yet at the bank) while set → the 2fa step repeats with error key `tan_not_confirmed`; the re-auth button raises a toast instead of clearing the pending state |
 
@@ -115,6 +116,17 @@ resulting FinTS state, so the coordinator's client connects with
   with `2fa_pending: true`; remove the flag, press the button
   (`/api/services/button/press`), everything recovers and the notification is
   dismissed. Pressing the button *before* removing the flag is a good probe.
+- **SCA at dialog init** — `touch flags/initsca`, poll: `fakebank.log` shows
+  `DIALOG_OPEN init_sca=yes` + `INIT_SCA`, persistent notification, button
+  available, sensor keeps its value with `2fa_pending: true`. Press the button
+  **with the flag still set**: `SEND_TAN` follows, then the poll succeeds and
+  `DIALOG_END` appears with **no** further `DIALOG_OPEN` in between (same
+  dialog). Then restart HA with the flag set: entry `loaded` (not
+  `setup_error`/`setup_retry`), sensors `unknown`, button available, one
+  `INIT_SCA` only — no retry storm; press the button → values appear.
+- **Rejected login on a poll** — `touch flags/pinerror`, reload the entry:
+  `setup_error`, a `reauth_confirm` flow, exactly one `DIALOG_OPEN
+  rejected=9942` (no retries).
 - **Credential loss** — `mv` the master key away and reload the entry: expect
   `setup_error` + a `reauth_confirm` flow; completing it must reuse the same
   `credential_id`.
