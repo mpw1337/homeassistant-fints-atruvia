@@ -4,6 +4,47 @@ Alle nennenswerten Änderungen an diesem Projekt werden hier dokumentiert.
 Format angelehnt an [Keep a Changelog](https://keepachangelog.com/de/1.1.0/);
 Einträge sind deutsch, konsistent mit `README.md` / `SECURITY.md`.
 
+## [0.6.2] - 2026-09-01
+
+Bugfix-Release für die Ersteinrichtung: Auf einer frischen Installation
+konnten keine Konten hinzugefügt werden („Die Bank hat kein unterstütztes
+Zwei-Schritt-TAN-Verfahren angeboten“), sofern die Bank für die Anmeldung eine
+starke Kundenauthentifizierung (SCA) verlangt — bei Atruvia der Normalfall.
+
+### Behoben
+
+- **Ersteinrichtung mit SCA-Pflicht.** Ohne gespeicherte Kundensystem-ID lehnt
+  Atruvia den einschrittigen HKSYN-Sync ab (9075) und nennt per 3920 nur das
+  erlaubte Zwei-Schritt-Verfahren — schickt dabei aber weder BPD noch HISYN.
+  python-fints konnte daraus kein HKTAN bauen und fand keine System-ID. Die
+  Integration holt die BPD jetzt vorab über einen anonymen Dialog (keine
+  Zugangsdaten, nur öffentliche Bankparameter), wiederholt den Sync
+  zweischrittig, zeigt die SecureGo+-Abfrage und übernimmt die System-ID aus
+  der TAN-Bestätigung. SCA-befreite Logins (3076) laufen weiter einschrittig
+  durch.
+- **FinTS-Zustand aus dem Config-Flow ging verloren.** Nach der Kontoauswahl
+  wurde der Client samt System-ID, TAN-Verfahren und BPD/UPD verworfen; der
+  Coordinator begann beim ersten Abruf ohne Zustand und lief erneut in den
+  Sync. Der Flow speichert den Zustand jetzt im verschlüsselten State-Store,
+  der Coordinator startet mit `restored_state`.
+- **„Weiter“ vor der App-Bestätigung.** Antwortet die Bank mit 3956 (Freigabe
+  noch nicht eingegangen), zeigt der 2FA-Schritt jetzt den Hinweis „Die Bank
+  hat die Freigabe noch nicht erhalten …“ und lässt sich wiederholen, statt mit
+  „Keine Konten gefunden“ in einer Sackgasse zu enden. Der Re-Auth-Button
+  meldet denselben Fall als Toast und bleibt drückbar.
+
+### Intern
+
+- `FinTsAtruviaClient.init_system_id` führt den HKSYN-Sync selbst (statt
+  python-fints' `_ensure_system_id`, das den Dialog vor einer möglichen
+  TAN-Antwort beendet); `complete_tan` liefert jetzt `NeedTANResponse | None`
+  (Folge-Challenge oder fertig). Der `sca_not_required`-Merker und die
+  TAN-Medium-Abfrage im Bootstrap sind entfallen — der Sync-Ausgang selbst
+  entscheidet.
+- Fake-Bank des Verify-Harness modelliert den Atruvia-Sync (Ablehnung,
+  Zwei-Schritt-Challenge, System-ID mit der TAN); neues Flag `tanpending`
+  für 3956. Unit-Suite: Sync-, Challenge- und Zustandsübergabe-Szenarien.
+
 ## [0.6.1] - 2026-08-17
 
 Diagnose-Verbesserung für Setup-Fehler: FinTS-Antwortcodes werden jetzt beim
