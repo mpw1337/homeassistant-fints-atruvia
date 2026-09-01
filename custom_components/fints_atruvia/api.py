@@ -632,6 +632,19 @@ class FinTsAtruviaClient:
             raise
         return client.init_tan_response
 
+    @property
+    def has_open_dialog(self) -> bool:
+        """Whether the wrapper currently holds an open bank dialog.
+
+        A pure attribute read (no I/O, safe on the event loop). Callers that
+        keep 2FA state across polls need it: a challenge is only answerable
+        while the dialog it came from is still held, and a failed
+        :meth:`complete_tan` or an ended dialog leaves that state stale.
+        """
+        return (
+            self._client is not None and self._client._standing_dialog is not None  # noqa: SLF001 - no public accessor
+        )
+
     def close_dialog(self) -> None:
         """End the standing dialog (HKEND) if one is open; the client stays usable."""
         self._close_standing_dialog()

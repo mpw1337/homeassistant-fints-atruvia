@@ -743,6 +743,26 @@ def test_close_dialog_forgets_the_dialog_even_when_hkend_fails():
     assert client._client is bank
 
 
+def test_has_open_dialog_tracks_the_wrapper_dialog_ownership():
+    """Reports whether the wrapper holds a dialog — the short circuit trusts it."""
+    bank = _Bank(system_id="SYS1")
+    client = _client_with_bank(bank)
+    assert client.has_open_dialog is False
+
+    client.open_dialog()
+    assert client.has_open_dialog is True
+
+    client.close_dialog()
+    assert client.has_open_dialog is False
+
+
+def test_has_open_dialog_is_false_without_a_client_and_builds_none():
+    client = _client()
+
+    assert client.has_open_dialog is False
+    assert client._client is None
+
+
 def test_close_dialog_is_noop_without_dialog_or_client():
     bank = _Bank(system_id="SYS1")
     client = _client_with_bank(bank)

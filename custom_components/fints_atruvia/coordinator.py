@@ -307,8 +307,8 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
 
         Used both by the ``TanRequiredError`` handler and by the short circuit
         that keeps a later poll away from the bank while the same challenge is
-        still pending. Creating the notification is idempotent — Home
-        Assistant replaces one with the same id.
+        pending *and* its dialog is still held. Creating the notification is
+        idempotent — Home Assistant replaces one with the same id.
         """
         self._tan_response = challenge
         self.is_2fa_pending = True
@@ -344,13 +344,22 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
         client = self._client
 
         if self.is_2fa_pending and self._tan_response is not None:
-            # The dialog this challenge belongs to is open but not
-            # authenticated. Opening nothing and fetching nothing is the only
-            # safe move: python-fints would reuse that dialog, Atruvia would
-            # refuse the jobs (9340) and python-fints would read the refusal
-            # as a wrong PIN — taking the re-auth button away while the
-            # notification still asks the user to press it.
-            return self._pending_challenge_result(self._tan_response)
+            if client.has_open_dialog:
+                # The dialog this challenge belongs to is open but not
+                # authenticated. Opening nothing and fetching nothing is the
+                # only safe move: python-fints would reuse that dialog,
+                # Atruvia would refuse the jobs (9340) and python-fints would
+                # read the refusal as a wrong PIN — taking the re-auth button
+                # away while the notification still asks the user to press it.
+                return self._pending_challenge_result(self._tan_response)
+            # Pending state without a dialog: the challenge died with it (a
+            # bank-side timeout, a failed HKTAN, any drift) and can no longer
+            # be answered. Drop it and poll normally instead of parking the
+            # entry forever. The notification stays for now — this poll either
+            # succeeds and dismisses it, or raises a fresh challenge and
+            # creates it again.
+            self._tan_response = None
+            self.is_2fa_pending = False
 
         try:
             # One standing dialog per poll. Without it python-fints opens a
@@ -501,6 +510,16 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
             )
             self.config_entry.async_start_reauth(self.hass)
             raise ConfigEntryAuthFailed(_MSG_AUTH_REJECTED) from err
+        except Exception:
+            # The dialog went with the failed HKTAN (complete_tan ends it on
+            # every error path), so the challenge is unanswerable now. Clear
+            # the pending state so the next poll starts a fresh dialog instead
+            # of short-circuiting on a challenge that is already dead. The
+            # button turns the re-raise into a toast.
+            self._tan_response = None
+            self.is_2fa_pending = False
+            pn_async_dismiss(self.hass, "fints_atruvia_reauth")
+            raise
         if follow_up is not None:
             self._tan_response = follow_up
             return False

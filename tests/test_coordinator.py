@@ -138,6 +138,7 @@ async def test_poll_with_unanswered_challenge_leaves_the_bank_alone(hass):
     challenge = SimpleNamespace(name="pending challenge")
     coordinator.is_2fa_pending = True
     coordinator._tan_response = challenge
+    coordinator._client.has_open_dialog = True
 
     result = await coordinator._async_update_data()
 
@@ -156,10 +157,45 @@ async def test_poll_with_unanswered_challenge_returns_empty_without_data(hass):
     coordinator = _make_coordinator(hass, [_IBAN1])
     coordinator.is_2fa_pending = True
     coordinator._tan_response = SimpleNamespace(name="pending challenge")
+    coordinator._client.has_open_dialog = True
 
     assert await coordinator._async_update_data() == {}
 
     coordinator._client.open_dialog.assert_not_called()
+
+
+async def test_pending_state_without_a_dialog_is_stale_and_polls_normally(hass):
+    """A challenge whose dialog is gone must not park the entry forever.
+
+    ``complete_tan`` closes the dialog on any failure, and the bank drops a
+    held dialog on its own after a while. Short-circuiting on the pending
+    flags alone would then skip every later poll.
+    """
+    coordinator = _make_coordinator(hass, [_IBAN1])
+    coordinator._seen_initialised = True
+    coordinator.is_2fa_pending = True
+    coordinator._tan_response = SimpleNamespace(name="stale challenge")
+    coordinator._client.has_open_dialog = False
+    coordinator._client.get_accounts.return_value = [_account(_IBAN1)]
+    coordinator._client.get_balance.return_value = _balance()
+    coordinator._client.get_transactions.return_value = []
+    observed: dict = {}
+
+    def open_dialog():
+        # Prove the stale state was dropped before the bank was contacted,
+        # not just by the success tail.
+        observed["pending"] = coordinator.is_2fa_pending
+        observed["challenge"] = coordinator._tan_response
+        # side_effect returning None falls back to the mock's return_value,
+        # which _make_coordinator already set to None (no challenge).
+
+    coordinator._client.open_dialog.side_effect = open_dialog
+
+    result = await coordinator._async_update_data()
+
+    assert _IBAN1 in result
+    coordinator._client.open_dialog.assert_called_once()
+    assert observed == {"pending": False, "challenge": None}
 
 
 async def test_successful_poll_opens_one_dialog_and_closes_it_after_the_fetch(hass):
@@ -465,3 +501,26 @@ async def test_complete_reauth_rejected_login_starts_the_reauth_flow(hass, caplo
     coordinator.config_entry.async_start_reauth.assert_called_once_with(hass)
     coordinator.async_refresh.assert_not_awaited()
     assert "9942" in caplog.text
+
+
+async def test_complete_reauth_clears_pending_when_the_tan_fails_generically(hass):
+    """Any complete_tan failure closes the dialog, so the pending state must go.
+
+    Otherwise the challenge stays stored with no dialog behind it: the next
+    poll would short-circuit on it and the button would replay it into a
+    client that has nothing open.
+    """
+    coordinator = _make_coordinator(hass, [_IBAN1])
+    coordinator._tan_response = MagicMock(name="challenge")
+    coordinator.is_2fa_pending = True
+    coordinator._client.complete_tan.side_effect = RuntimeError("dialog timed out")
+    coordinator.async_refresh = AsyncMock()
+    _raise_reauth_notification(hass)
+
+    with pytest.raises(RuntimeError):
+        await coordinator.async_complete_reauth()
+
+    assert coordinator.is_2fa_pending is False
+    assert coordinator._tan_response is None
+    assert _REAUTH_NOTIFICATION not in _async_get_or_create_notifications(hass)
+    coordinator.async_refresh.assert_not_awaited()
