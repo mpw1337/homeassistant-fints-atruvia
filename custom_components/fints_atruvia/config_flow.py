@@ -36,6 +36,7 @@ from .api import (
 from .storage import (
     CredentialStoreError,
     FintsCredentialStore,
+    FintsStateStore,
     async_get_master_key,
 )
 
@@ -317,7 +318,7 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             # User clicked "Weiter" — complete the TAN challenge
             try:
-                await self.hass.async_add_executor_job(
+                follow_up = await self.hass.async_add_executor_job(
                     self._client.complete_tan,
                     self._tan_response,
                     "",
@@ -340,6 +341,16 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
                     step_id="2fa",
                     data_schema=vol.Schema({}),
                     errors={"base": "cannot_connect"},
+                )
+
+            if follow_up is not None:
+                # Not confirmed in the app yet (3956), or the fresh dialog
+                # after the sync asks for SCA again: same prompt, new challenge.
+                self._tan_response = follow_up
+                return self.async_show_form(
+                    step_id="2fa",
+                    data_schema=vol.Schema({}),
+                    errors={"base": "tan_not_confirmed"},
                 )
 
             return await self.async_step_accounts()
@@ -415,15 +426,18 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
     async def _finish_setup(self, selected: list[str]) -> ConfigFlowResult:
-        """Persist credentials encrypted and create / update the config entry."""
+        """Persist credentials and FinTS state, then create / update the entry."""
         # The FinTS dialog's last bank access (get_accounts / complete_tan)
-        # already happened before this step runs — release the client (and
-        # the PIN python-fints holds for it) now, in both the reauth and the
-        # new-entry branch below, rather than leaving it referenced on the
+        # already happened before this step runs — take the state python-fints
+        # built up (system id, TAN mechanism, BPD/UPD) and release the client
+        # (and the PIN python-fints holds for it) now, in both the reauth and
+        # the new-entry branch below, rather than leaving it referenced on the
         # flow object until HA discards it.
+        fints_state: bytes | None = None
         if self._client is not None:
             client = self._client
             self._client = None
+            fints_state = await self.hass.async_add_executor_job(client.deconstruct)
             await self.hass.async_add_executor_job(client.close)
 
         creds = self._credentials
@@ -452,6 +466,7 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
             await FintsCredentialStore(self.hass, credential_id).save(
                 creds["username"], creds["password"]
             )
+            await self._save_fints_state(credential_id, fints_state)
             self.hass.config_entries.async_update_entry(
                 self._reauth_entry,
                 data={
@@ -473,6 +488,7 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
         await FintsCredentialStore(self.hass, credential_id).save(
             creds["username"], creds["password"]
         )
+        await self._save_fints_state(credential_id, fints_state)
         result = self.async_create_entry(
             title=title,
             data={
@@ -487,6 +503,19 @@ class FintsBankingConfigFlow(ConfigFlow, domain=DOMAIN):
         # store owns it.
         self._credentials = {}
         return result
+
+    async def _save_fints_state(
+        self, credential_id: str, fints_state: bytes | None
+    ) -> None:
+        """Hand the flow's FinTS state to the coordinator via the state store.
+
+        The coordinator builds its own client from that store. Without the
+        hand-over it would start without a system id, and python-fints' own
+        HKSYN sync fails for SCA-required logins ("Could not find system_id")
+        — the entry would never load although the flow just succeeded.
+        """
+        if fints_state is not None:
+            await FintsStateStore(self.hass, credential_id).save(fints_state)
 
     # ------------------------------------------------------------------
     # Reauth flow

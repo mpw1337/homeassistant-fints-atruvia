@@ -19,6 +19,14 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
+# Shown as a toast when the button is pressed before the SecureGo+ confirmation
+# reached the bank (response code 3956). Constant rather than inline because
+# ruff's TRY003 wants long exception texts out of the raise site.
+_MSG_NOT_CONFIRMED = (
+    "Die Bank hat die Freigabe noch nicht erhalten — bitte zuerst in der "
+    "SecureGo+ App bestätigen und den Button dann erneut drücken."
+)
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -50,8 +58,10 @@ class FintsReAuthButton(CoordinatorEntity[FintsBankingCoordinator], ButtonEntity
         if not self.coordinator.is_2fa_pending:
             return
         try:
-            await self.coordinator.async_complete_reauth()
+            completed = await self.coordinator.async_complete_reauth()
         except Exception as err:
             _LOGGER.debug("Re-auth completion failed", exc_info=True)
             msg = f"Re-authentication failed ({type(err).__name__})"
             raise HomeAssistantError(msg) from err
+        if not completed:
+            raise HomeAssistantError(_MSG_NOT_CONFIRMED)

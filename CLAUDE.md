@@ -93,12 +93,16 @@ IBANs must be masked at every external boundary:
 
 Transaction `purpose` and `creditor` (counterparty name) are **off by default**. They appear in sensor attributes and event payloads only when the per-entry options-flow toggle `CONF_EXPOSE_FULL_DATA` is true. Don't add code paths that surface these fields unconditionally. The coordinator exposes the toggle via `coordinator.expose_full_data`. `async_setup_entry` registers an options update listener (`entry.add_update_listener(_async_reload_entry)`) that reloads the entry whenever the toggle changes, so it takes effect immediately instead of waiting for the next 6-hour poll.
 
+### First login / system-id sync (config flow)
+
+A fresh login has no FinTS state, so the bank must assign a system id (HKSYN). Atruvia only does that one-step for SCA-exempt logins (3076); everyone else gets the one-step sync rejected (9075) with 3920 naming the permitted two-step mechanism and **neither BPD nor HISYN** in the reply. python-fints' own `_ensure_system_id` can't cope (no BPD → no HKTAN; it also ends the dialog before a TAN could be answered), so `FinTsAtruviaClient.init_system_id` drives the sync itself: `_load_bpd_anonymously` (anonymous dialog, no credentials) → one-step `_sync` → if rejected, two-step `_sync` → SecureGo+ challenge with the sync dialog kept open as python-fints' standing dialog → `complete_tan` → system id from the TAN-completion response → fresh dialog → `get_sepa_accounts`. `complete_tan` returns `NeedTANResponse | None`: a non-None result is a follow-up challenge (3956 "not confirmed yet", or the fresh dialog demanding SCA again) that the caller shows again (`tan_not_confirmed`). `_finish_setup` persists `client.deconstruct()` into `FintsStateStore` **before** closing the client — without that hand-over the coordinator would start without a system id and re-run the (failing) sync. Don't reintroduce `fetch_tan_mechanisms()` / `is_tan_media_required()` in the bootstrap; both need a completed sync first.
+
 ### 90-day SCA / re-auth lifecycle
 
 Atruvia banks require fresh SecureGo+ confirmation roughly every 90 days. Flow:
 
 1. Coordinator catches `TanRequiredError` mid-update → stashes `_tan_response`, sets `is_2fa_pending = True`, creates a persistent notification, and returns `self.data` (last known good).
-2. `button.py` `FintsReAuthButton` becomes `available` while `is_2fa_pending`. Pressing it calls `coordinator.async_complete_reauth()` → `client.complete_tan()` → fresh refresh.
+2. `button.py` `FintsReAuthButton` becomes `available` while `is_2fa_pending`. Pressing it calls `coordinator.async_complete_reauth()` → `client.complete_tan()` → fresh refresh. If `complete_tan` hands back a follow-up challenge (3956), the coordinator keeps `is_2fa_pending`, stores the new challenge and returns `False`; the button raises a `HomeAssistantError` toast so the user confirms in the app and presses again.
 3. If decryption itself fails, `CredentialStoreError` is converted to `ConfigEntryAuthFailed` so HA opens the reauth config-flow (`async_step_reauth_confirm`), which reuses the existing `credential_id`.
 
 ### New-transaction events

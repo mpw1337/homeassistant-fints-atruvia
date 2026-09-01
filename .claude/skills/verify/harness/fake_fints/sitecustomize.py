@@ -18,17 +18,26 @@ Environment:
                           D/tanmode2          SCA for the *second* account only
                           D/nohisal           get_balance answers without a HISAL
                           D/nobooked          HISAL without a booked balance
-                          D/nomech            bank offers no two-step TAN mechanism (empty BPD/3920)
-                          D/nohitans          bank announces one two-step mechanism via 3920 but has
-                                              no (implemented) HITANS segment for it -> NoTanMechanismError
-                                              with 3920 in the observed codes, unlike nomech's empty codes
+                          D/nomech            sync rejected without 3920 and without BPD -> NoTanMechanismError
+                                              with empty observed codes
+                          D/nohitans          sync rejected, 3920 names one mechanism but no HITANS for it
+                                              (BPD withheld, anonymous fetch empty too) -> NoTanMechanismError
+                                              with 3920 in the observed codes
                           D/pinerror          bank rejects dialog init with code 9942 (wrong PIN/locked access)
-                          D/nosca             bank is SCA-exempt (3076): no two-step mechanism, no TAN challenge
+                          D/nosca             bank is SCA-exempt (3076): the one-step sync succeeds, no TAN
+                          D/tanpending        send_tan answers 3956 ("not confirmed in the app yet") while set
   FAKE_FINTS_TAN=1      same as the tanmode flag, from startup
+
+Without flags a *fresh* login behaves like Atruvia in production: the one-step
+HKSYN sync is rejected (9075 + 3920), the two-step sync raises the SecureGo+
+challenge, and the system id arrives with the TAN completion. A client built
+with ``from_data`` (the coordinator, after the flow stored its state) already
+has a system id and skips the sync.
 """
 import datetime
 import os
 from decimal import Decimal
+from types import SimpleNamespace
 
 try:
     import fints.client as _fc
@@ -39,6 +48,7 @@ except ImportError:  # not a HA process
 
 IBAN = "DE89370400440532013000"   # selected in the sandbox entry
 IBAN2 = "DE02120300000000202051"  # exists at the bank, must NOT be exposed
+SYSTEM_ID = "SANDBOX123"          # what the fake bank assigns via HISYN
 
 
 def _flag(name):
@@ -133,6 +143,88 @@ def _transactions():
     return txns
 
 
+class _Bpd:
+    """Bank parameter data: empty when the bank withheld it (nomech/nohitans)."""
+
+    def __init__(self):
+        self.segments = [] if (_flag("nomech") or _flag("nohitans")) else ["HITANS"]
+
+    def find_segments(self, *a, **kw):
+        return []
+
+
+class _Response:
+    """Institute message: carries HISYN (a system id) or not."""
+
+    def __init__(self, system_id=None):
+        self._system_id = system_id
+
+    def find_segment_first(self, _segment_type):
+        if self._system_id is None:
+            return None
+        return SimpleNamespace(system_id=self._system_id)
+
+
+class _Dialog:
+    """Stand-in for fints.dialog.FinTSDialog, as far as api.py drives it.
+
+    ``init`` scripts the bank's answer to the HKSYN sync (see module doc).
+    The real _ExtendedFinTSClient._process_response never runs here (the fake
+    replaces FinTS3PinTanClient wholesale), so the response codes it would
+    have recorded are appended to ``observed_codes`` / ``observed_error_codes``
+    directly.
+    """
+
+    def __init__(self, client):
+        self._client = client
+        self.open = False
+        self._entered = 0
+
+    def init(self, *segments):
+        c = self._client
+        self.open = True
+        if _flag("pinerror"):
+            c.observed_codes.append("9942")
+            c.observed_error_codes.append("9942")
+            msg = "Anmeldung abgelehnt (Fake-Bank pinerror flag)"
+            raise FinTSClientPINError(msg)
+        if _flag("nosca"):
+            # 3076: the one-step sync is accepted, HISYN carries the system id.
+            c.observed_codes.append("3076")
+            c.system_id = SYSTEM_ID
+            return _Response(SYSTEM_ID)
+        if _flag("nomech"):
+            # Rejected without 3920 and without BPD: nothing to fall back to.
+            return _Response()
+        if _flag("nohitans"):
+            # Rejected, 3920 names a mechanism, but the BPD has no HITANS for
+            # it (and the anonymous fetch came back empty too): still 999.
+            c.observed_codes.append("3920")
+            return _Response()
+        if c._mech == "999":
+            # Atruvia in production: one-step sync rejected, 3920 names the
+            # permitted two-step mechanism, which python-fints selects.
+            c.observed_codes.extend(["9075", "3920"])
+            c.set_tan_mechanism("946")
+            return _Response()
+        # Two-step sync: SecureGo+ challenge (3955), system id only after it.
+        c.observed_codes.append("3955")
+        c.init_tan_response = c._need_tan()
+        return _Response()
+
+    def __enter__(self):
+        self._entered += 1
+        return self
+
+    def __exit__(self, *exc):
+        self._entered -= 1
+        if self._entered == 0:
+            self.end()
+
+    def end(self):
+        self.open = False
+
+
 class FakeFinTS3PinTanClient:
     """Stand-in for fints.client.FinTS3PinTanClient."""
 
@@ -143,6 +235,10 @@ class FakeFinTS3PinTanClient:
         self.server = server
         self.product_id = product_id
         self.from_data = from_data
+        self.system_id = SYSTEM_ID if from_data else "0"
+        self.bpd = _Bpd()
+        self.bpa = None
+        self.bpd_version = 0
         self._standing_dialog = None
         self.init_tan_response = None
         self.selected_tan_medium = None
@@ -157,59 +253,8 @@ class FakeFinTS3PinTanClient:
              f"restored_state={'yes' if from_data else 'no'}")
 
     # --- dialog / TAN plumbing ------------------------------------------
-    def fetch_tan_mechanisms(self):
-        if _flag("pinerror"):
-            # Real bank: dialog init rejected with code 9942 ("PIN falsch
-            # oder Zugang gesperrt"), surfaced by python-fints as
-            # FinTSClientPINError via _process_response. Our fake never
-            # opens a real dialog (it replaces FinTS3PinTanClient wholesale,
-            # so _ExtendedFinTSClient._process_response in api.py is never
-            # reached on this path) -- per the Task-4 brief this is an
-            # accepted shortcut: record the code directly on
-            # observed_error_codes (the same list _process_response would
-            # have appended to) and raise the same exception type api.py
-            # catches in init_system_id().
-            self.observed_error_codes.append("9942")
-            msg = "Anmeldung abgelehnt (Fake-Bank pinerror flag)"
-            raise FinTSClientPINError(msg)
-        if _flag("nosca"):
-            # Real bank: response code 3076 ("Starke Kundenauthentifizierung
-            # nicht notwendig") sets sca_not_required via _process_response,
-            # which never runs here for the same reason as above -- so we
-            # set it directly, mirroring only what that code does (3076 is
-            # not a 9xxx code, so observed_error_codes stays untouched).
-            self.sca_not_required = True
-        if _flag("nohitans"):
-            # Real bank: response code 3920 announces exactly one two-step
-            # mechanism (e.g. '946') via _process_response, which never runs
-            # here for the same reason as above -- so we record the code
-            # directly onto observed_codes (the same list _process_response
-            # would have appended it to; 3920 is not a 9xxx code, so
-            # observed_error_codes stays untouched). Unlike nomech (BPD/3920
-            # withheld entirely -> empty observed codes), 3920 IS present
-            # here but the BPD has no (implemented) HITANS segment for the
-            # mechanism it names, so get_tan_mechanisms() still comes back
-            # empty below -- this is what lets the diagnostics distinguish
-            # the two production failure shapes.
-            if "3920" not in self.observed_codes:
-                self.observed_codes.append("3920")
-        mechs = self.get_tan_mechanisms()
-        # Real client: response code 3920 populates allowed_security_functions,
-        # while the BPD's HITANS parameters feed get_tan_mechanisms() (see
-        # fints/client.py _process_response, client.py:1570-1571). We derive
-        # the former from the latter here as a shortcut since our fake BPD
-        # parsing already produces the get_tan_mechanisms() dict.
-        self.allowed_security_functions = list(mechs)
-        return mechs
-
-    def get_tan_mechanisms(self):
-        # nosca: SCA-exempt logins are one-step, so the bank offers no
-        # two-step mechanism either -- same empty BPD/3920 shape as nomech.
-        # nohitans: 3920 named a mechanism, but no HITANS segment for it
-        # made it into the (fake) BPD, so the mechanism dict is empty too.
-        if _flag("nomech") or _flag("nosca") or _flag("nohitans"):
-            return {}
-        return {"942": "SecureGo plus"}
+    def _new_dialog(self, lazy_init=False):
+        return _Dialog(self)
 
     def get_current_tan_mechanism(self):
         return self._mech
@@ -217,28 +262,28 @@ class FakeFinTS3PinTanClient:
     def set_tan_mechanism(self, mech):
         self._mech = mech
 
-    def is_tan_media_required(self):
-        # Mirrors fints/client.py: looks the current mechanism up in the BPD
-        # segment 3920 (here, get_tan_mechanisms()) before answering. Under
-        # ``nomech`` with ``_mech`` still "999" this raises KeyError('999')
-        # exactly like the real library — the Task-1 guard in api.py must
-        # keep this line from ever being reached.
-        mech = self.get_tan_mechanisms()[self._mech]
-        return False
-
-    def get_tan_media(self, *a, **kw):
-        return None, []
-
     def __enter__(self):
-        self._standing_dialog = object()
+        dialog = _Dialog(self)
+        dialog.open = True
+        dialog.__enter__()
+        self._standing_dialog = dialog
         return self
 
     def __exit__(self, *exc):
+        self._standing_dialog.__exit__(*exc)
         self._standing_dialog = None
         return False
 
     def send_tan(self, response, tan=""):
         _log(f"SEND_TAN tan={'<empty>' if tan == '' else '<value>'}")
+        if _flag("tanpending"):
+            # 3956: the app confirmation has not reached the bank yet.
+            return self._need_tan()
+        if self.system_id == "0":
+            # Sync dialog: the system id arrives with the TAN completion.
+            self.system_id = SYSTEM_ID
+            return _Response(SYSTEM_ID)
+        return _Response()
 
     def deconstruct(self, including_private=False):
         return b"FAKE-FINTS-STATE-BLOB-system_id=SANDBOX123"

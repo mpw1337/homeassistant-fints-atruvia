@@ -13,7 +13,10 @@ from homeassistant.data_entry_flow import FlowResultType, UnknownFlow
 from custom_components.fints_atruvia import DOMAIN, _entry_unique_id
 from custom_components.fints_atruvia.api import AuthRejectedError, NoTanMechanismError
 from custom_components.fints_atruvia.config_flow import FintsBankingConfigFlow
-from custom_components.fints_atruvia.storage import async_get_master_key
+from custom_components.fints_atruvia.storage import (
+    FintsStateStore,
+    async_get_master_key,
+)
 
 _URL = "https://fints2.atruvia.de/cgi-bin/hbciservlet"
 _IBAN = "DE51120300009876543922"
@@ -35,6 +38,7 @@ def _client_mock() -> MagicMock:
     # None = no SCA challenge, so the flow goes straight to the account picker.
     client.init_system_id.return_value = None
     client.get_accounts.return_value = [_account()]
+    client.deconstruct.return_value = b"fints-state-from-the-flow"
     return client
 
 
@@ -415,3 +419,73 @@ async def test_2fa_shows_invalid_auth_when_bank_rejects_tan(hass, caplog):
     assert result["step_id"] == "2fa"
     assert result["errors"] == {"base": "invalid_auth"}
     assert "9931" in caplog.text
+
+
+async def test_completed_flow_hands_fints_state_to_the_coordinator(hass):
+    """The flow's system id / TAN mechanism / BPD must survive into the entry.
+
+    The coordinator builds its own client from the state store. Without this
+    hand-over it starts with an empty state, python-fints runs its own HKSYN
+    sync again, and for an SCA-required login that sync fails ("Could not
+    find system_id") — the entry never loads although the flow succeeded.
+    """
+    client = _client_mock()
+    flow_id = await _flow_to_account_picker(hass, client)
+
+    with patch(
+        "custom_components.fints_atruvia.async_setup_entry",
+        AsyncMock(return_value=True),
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            flow_id, {"selected_accounts": [_IBAN]}
+        )
+        await hass.async_block_till_done(wait_background_tasks=True)
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    credential_id = result["data"]["credential_id"]
+    stored = await FintsStateStore(hass, credential_id).load()
+    assert stored == b"fints-state-from-the-flow"
+    # deconstruct() needs the live client, so it must run before close().
+    assert client.method_calls.index(("deconstruct", (), {})) < (
+        client.method_calls.index(("close", (), {}))
+    )
+
+
+async def test_2fa_repeats_when_bank_has_not_seen_the_confirmation_yet(hass):
+    """complete_tan returning a challenge (3956) re-shows the 2fa step.
+
+    The follow-up challenge replaces the stored one so the next Weiter click
+    continues the *current* dialog.
+    """
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_USER}
+    )
+    first = MagicMock(name="first challenge")
+    pending = MagicMock(name="still pending")
+    client = _client_mock()
+    client.init_system_id.return_value = first
+    client.complete_tan.side_effect = [pending, None]
+    with patch(
+        "custom_components.fints_atruvia.config_flow.FinTsAtruviaClient",
+        return_value=client,
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                "blz": "12345678",
+                "username": "netkey1",
+                "password": "hunter2",
+                "url": _URL,
+            },
+        )
+        assert result["step_id"] == "2fa"
+
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "2fa"
+        assert result["errors"] == {"base": "tan_not_confirmed"}
+
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+
+    assert result["step_id"] == "accounts"
+    assert [c.args[0] for c in client.complete_tan.call_args_list] == [first, pending]

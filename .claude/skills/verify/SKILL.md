@@ -75,10 +75,18 @@ next poll, no restart:
 | `tanmode2` | SCA for the second account (`DE02…2051`) only → lets a multi-account poll fail *after* the first account was processed |
 | `nohisal` | `get_balance` answers without a HISAL segment → `ValueError("No balance data returned for account …")` in `api.py` |
 | `nobooked` | HISAL present but without a booked balance → `ValueError("No booked balance in HISAL response for account …")` |
-| `nomech` | bank offers no two-step TAN mechanism (empty BPD/3920) → `NoTanMechanismError` in `api.py` → config-flow error key `no_tan_mechanism` — the regression path for the formerly opaque `KeyError: '999'` from python-fints' `is_tan_media_required` |
-| `nohitans` | bank announces exactly one two-step mechanism via 3920 but the BPD has no (implemented) HITANS segment for it → `get_tan_mechanisms()` still empty → same `NoTanMechanismError` / `no_tan_mechanism` as `nomech`, but the observed-codes list includes `3920` — the production shape Task 1/2's diagnostics were added for (bank announced one mechanism, BPD unparseable) |
+| `nomech` | sync rejected without 3920 and without BPD → `NoTanMechanismError` in `api.py` with empty observed codes → config-flow error key `no_tan_mechanism` |
+| `nohitans` | sync rejected, 3920 names one mechanism but the BPD (also the anonymous fetch) has no HITANS for it → same `NoTanMechanismError` / `no_tan_mechanism`, observed codes include `3920` |
 | `pinerror` | bank rejects dialog init with code 9942 → `FinTSClientPINError` → `AuthRejectedError` in `api.py` → config-flow error key `invalid_auth` |
-| `nosca` | SCA-exempt login (code 3076): bank offers no two-step TAN mechanism and requires no TAN challenge |
+| `nosca` | SCA-exempt login (code 3076): the one-step sync succeeds, no TAN challenge, straight to the account picker |
+| `tanpending` | `send_tan` answers 3956 (app confirmation not yet at the bank) while set → the 2fa step repeats with error key `tan_not_confirmed`; the re-auth button raises a toast instead of clearing the pending state |
+
+Without flags a **fresh login** (config flow, reauth flow) behaves like Atruvia
+in production: one-step HKSYN sync rejected (9075 + 3920), two-step sync raises
+the SecureGo+ challenge (`2fa` step), the system id arrives with the TAN
+completion, and only then does the account picker appear. The flow stores the
+resulting FinTS state, so the coordinator's client connects with
+`restored_state=yes` and never syncs again.
 
 `$SB_ROOT/fakebank.log` records each connect (`pin_len`, `restored_state`) and
 `SEND_TAN`.

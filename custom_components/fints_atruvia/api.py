@@ -21,8 +21,10 @@ import logging
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 
-from fints.client import FinTS3PinTanClient, NeedTANResponse
+from fints.client import SYSTEM_ID_UNASSIGNED, FinTS3PinTanClient, NeedTANResponse
 from fints.exceptions import FinTSClientPINError, FinTSClientTemporaryAuthError
+from fints.formals import CUSTOMER_ID_ANONYMOUS, SynchronizationMode
+from fints.segments.dialog import HISYN4, HKSYN3
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -35,6 +37,7 @@ _MSG_INSECURE_URL = (
     "FinTS endpoint URL must use https://. Plain http would leak the PIN in transit."
 )
 _MSG_NO_TAN_MECHANISM = "Bank offered no supported two-step TAN mechanism"
+_MSG_NO_SYSTEM_ID = "Bank did not assign a system id after the TAN was confirmed"
 
 
 class TanRequiredError(Exception):
@@ -204,7 +207,6 @@ class _ExtendedFinTSClient(FinTS3PinTanClient):
         """
         self.observed_error_codes: list[str] = []
         self.observed_codes: list[str] = []
-        self.sca_not_required: bool = False
         super().__init__(*args, **kwargs)
 
     def _get_balance(self, command_seg: Any, response: Any) -> Any:  # type: ignore[override]
@@ -228,8 +230,6 @@ class _ExtendedFinTSClient(FinTS3PinTanClient):
             self.observed_codes.append(code)
         if code.startswith("9"):
             self.observed_error_codes.append(code)
-        if code == "3076":
-            self.sca_not_required = True
         super()._process_response(dialog, segment, response)
 
 
@@ -327,137 +327,134 @@ class FinTsAtruviaClient:
         self._client = None
         self._cached_accounts = None
 
-    @staticmethod
-    def _ensure_two_step_mechanism_or_sca_exempt(client: FinTS3PinTanClient) -> bool:
-        """Confirm a two-step TAN mechanism is active, or an SCA exemption.
+    def _load_bpd_anonymously(self, client: FinTS3PinTanClient) -> None:
+        """Fetch the bank parameters (BPD) through an anonymous dialog.
 
-        Returns ``True`` if a two-step mechanism is active, meaning the
-        subsequent TAN-medium probe is safe to run. Returns ``False`` if the
-        bank signalled SCA exemption (response code 3076) instead - the
-        caller must then skip that probe, since python-fints'
-        ``is_tan_media_required()`` raises a raw ``KeyError`` for mechanism
-        "999".
-
-        Raises ``NoTanMechanismError`` (carrying the client's observed
-        response codes, see ``init_system_id`` docstring) if neither
-        applies.
+        Atruvia sends the BPD only once a login dialog succeeded, but a
+        two-step login dialog cannot be built without the BPD's HITANS
+        segments (python-fints needs them to act on the bank's 3920 list of
+        permitted mechanisms). The anonymous dialog exists for exactly this:
+        no credentials, public parameters only. Best effort — on failure the
+        login proceeds with an empty BPD, as it always did.
         """
-        if client.get_current_tan_mechanism() not in (None, "999"):
-            return True
-        if getattr(client, "sca_not_required", False):
-            _LOGGER.debug(
-                "Bank signalled SCA exemption (3076); "
-                "continuing with one-step mechanism"
-            )
-            return False
-        _LOGGER.debug(
-            "No two-step TAN mechanism negotiable: "
-            "%d allowed security functions, %d supported mechanisms, "
-            "HITANS versions in BPD: %s",
-            len(getattr(client, "allowed_security_functions", ())),
-            len(client.get_tan_mechanisms()),
-            _hitans_versions(client),
+        if client.bpd.segments:
+            return
+        anonymous = FinTS3PinTanClient(
+            self._blz,
+            CUSTOMER_ID_ANONYMOUS,
+            None,
+            self._url,
+            product_id=self._product_id,
         )
-        raise NoTanMechanismError(
-            _MSG_NO_TAN_MECHANISM,
-            codes=tuple(getattr(client, "observed_codes", ())),
-        )
+        try:
+            with anonymous:
+                pass
+        except Exception as exc:  # noqa: BLE001 - best effort, see docstring
+            _LOGGER.debug("Anonymous BPD fetch failed: %s", type(exc).__name__)
+            return
+        client.bpd = anonymous.bpd
+        client.bpa = anonymous.bpa
+        client.bpd_version = anonymous.bpd_version
+
+    @staticmethod
+    def _sync(client: FinTS3PinTanClient) -> NeedTANResponse | None:
+        """Run one HKSYN dialog and adopt the system id if the bank sends it.
+
+        Returns the SCA challenge if the bank demands one for the sync — the
+        dialog then stays open as the client's standing dialog so
+        ``send_tan`` continues it — and ``None`` otherwise (dialog ended).
+        python-fints' own ``_ensure_system_id`` is unusable for SCA banks:
+        it ends the dialog before anyone could answer the challenge.
+        """
+        client.init_tan_response = None
+        # No public API opens a dialog with an extra HKSYN segment.
+        dialog = client._new_dialog(lazy_init=True)  # noqa: SLF001
+        response = dialog.init(HKSYN3(SynchronizationMode.NEW_SYSTEM_ID))
+        seg = response.find_segment_first(HISYN4)
+        if seg is not None:
+            client.system_id = seg.system_id
+        if client.init_tan_response is not None:
+            dialog.__enter__()
+            client._standing_dialog = dialog  # noqa: SLF001 - see above
+            return client.init_tan_response
+        try:
+            dialog.end()
+        except Exception:  # after a rejection the bank has already dropped the dialog
+            _LOGGER.debug("Ending the sync dialog failed", exc_info=True)
+        return None
+
+    def _open_dialog_and_cache_accounts(
+        self, client: FinTS3PinTanClient
+    ) -> NeedTANResponse | None:
+        """Open the standing dialog and cache the accounts, unless SCA comes first.
+
+        Returns the challenge (dialog left open) or ``None`` (dialog closed).
+        """
+        client.init_tan_response = None
+        client.__enter__()
+        if client.init_tan_response is not None:
+            return client.init_tan_response
+        try:
+            self._cached_accounts = client.get_sepa_accounts()
+        finally:
+            self._close_standing_dialog()
+        return None
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
     def init_system_id(self) -> NeedTANResponse | None:
-        """Initialise the FinTS system-ID / open the first dialog.
+        """Open the first bank dialog for a login without a stored FinTS state.
 
-        Follows the python-fints quickstart pattern for PSD2/SCA banks:
+        A fresh client has no system id, so the bank must assign one (HKSYN).
+        Atruvia does that in one of two ways:
 
-        1. ``fetch_tan_mechanisms()`` to discover available TAN methods. For
-           SCA-enforced Atruvia instances this raises ``ValueError`` (the
-           bank withholds HISYN4 until SCA), but populates
-           ``allowed_security_functions`` and the BPD as a side effect.
-        2. Pick a two-step mechanism so the subsequent signed dialog uses
-           SCA-compatible authentication.
-        3. Pick a TAN medium if the bank requires one.
-        4. Open a standing dialog. python-fints captures any SCA challenge
-           in ``client.init_tan_response``.
+        * SCA-exempt logins (response code 3076): the plain one-step sync
+          succeeds and HISYN carries the system id straight away.
+        * Everyone else: the one-step sync is rejected (9075), response code
+          3920 names the permitted two-step mechanisms, and the bank sends
+          *neither* HISYN nor the BPD. python-fints selects the first
+          supported mechanism from 3920 — provided the BPD is already loaded,
+          hence :meth:`_load_bpd_anonymously` first. The sync is repeated
+          two-step, which yields the SecureGo+ challenge; the system id then
+          arrives with the TAN completion (see :meth:`complete_tan`).
 
-        Returns ``None`` if no SCA was required (accounts cached, dialog
-        closed) or a ``NeedTANResponse`` if SCA is pending. In the latter
-        case the standing dialog stays open and the caller MUST call
-        ``complete_tan()`` to finish setup.
+        Returns ``None`` when no SCA was required (accounts cached, dialog
+        closed) or the ``NeedTANResponse`` to show the user. In the latter
+        case the dialog stays open and the caller MUST call
+        :meth:`complete_tan` next.
 
-        Raises ``NoTanMechanismError`` if the bank offers no usable two-step
-        TAN mechanism (no response code 3920, BPD withheld, or only
-        unsupported HITANS versions) — without this guard python-fints'
-        ``is_tan_media_required()`` raises a raw ``KeyError`` instead. The
-        error carries ``codes``, every numeric response code observed during
-        bootstrap (see ``_ExtendedFinTSClient._process_response``), so a
-        production failure can be diagnosed after the fact.
-
-        Exception: if the bank signalled response code 3076 ("Starke
-        Kundenauthentifizierung nicht notwendig", tracked as
-        ``client.sca_not_required``), a missing two-step mechanism is
-        expected and legitimate — the guard logs and continues one-step
-        instead of raising, and the TAN-medium probe is skipped entirely.
-
-        Raises ``AuthRejectedError`` if the bank rejects authentication
-        during dialog initialization (``FinTSClientPINError`` or
-        ``FinTSClientTemporaryAuthError``).
+        Raises ``NoTanMechanismError`` (carrying every response code observed
+        so far) if the sync was rejected without a supported two-step
+        mechanism to fall back to, and ``AuthRejectedError`` if the bank
+        rejected the login itself.
         """
         client = self._build_client()
         self._client = client
-
         try:
-            try:
-                client.fetch_tan_mechanisms()
-            except ValueError as exc:
-                _LOGGER.debug(
-                    "fetch_tan_mechanisms raised ValueError "
-                    "(expected for SCA banks): %s",
-                    exc,
-                )
-
-            # If only the one-step mechanism is selected, upgrade to the
-            # first available two-step mechanism so the signed dialog can
-            # perform SCA.
-            if client.get_current_tan_mechanism() in (None, "999"):
-                for sec_func in client.get_tan_mechanisms():
-                    if sec_func != "999":
-                        client.set_tan_mechanism(sec_func)
-                        break
-
-            two_step_active = self._ensure_two_step_mechanism_or_sca_exempt(client)
-
-            if (
-                two_step_active
-                and client.selected_tan_medium is None
-                and client.is_tan_media_required()
-            ):
-                _, media = client.get_tan_media()
-                if media:
-                    client.set_tan_medium(media[0])
-                else:
-                    # Workaround for banks that signal "no medium needed" via
-                    # empty list (see minimal_interactive_cli_bootstrap).
-                    client.selected_tan_medium = ""
-
-            client.__enter__()
-            keep_open = False
-            try:
-                if client.init_tan_response is not None:
-                    _LOGGER.debug(
-                        "SCA challenge during system-ID init: %s",
-                        client.init_tan_response,
-                    )
-                    keep_open = True
-                    return client.init_tan_response
-                self._cached_accounts = client.get_sepa_accounts()
-                return None
-            finally:
-                if not keep_open:
-                    self._close_standing_dialog()
+            challenge = None
+            if client.system_id == SYSTEM_ID_UNASSIGNED:
+                self._load_bpd_anonymously(client)
+                challenge = self._sync(client)
+                if challenge is None and client.system_id == SYSTEM_ID_UNASSIGNED:
+                    if client.get_current_tan_mechanism() in (None, "999"):
+                        _LOGGER.debug(
+                            "Sync rejected and no two-step TAN mechanism negotiable: "
+                            "%d allowed security functions, HITANS versions in "
+                            "BPD: %s",
+                            len(getattr(client, "allowed_security_functions", ())),
+                            _hitans_versions(client),
+                        )
+                        raise NoTanMechanismError(
+                            codes=tuple(getattr(client, "observed_codes", ()))
+                        )
+                    challenge = self._sync(client)
+            if challenge is not None:
+                return challenge
+            return self._open_dialog_and_cache_accounts(client)
         except (FinTSClientPINError, FinTSClientTemporaryAuthError) as exc:
+            self._close_standing_dialog()
             raise AuthRejectedError(
                 codes=tuple(getattr(client, "observed_error_codes", ()))
             ) from exc
@@ -474,35 +471,55 @@ class FinTsAtruviaClient:
         except Exception:
             _LOGGER.debug("Error closing FinTS dialog", exc_info=True)
 
-    def complete_tan(self, tan_response: NeedTANResponse, tan: str = "") -> None:
-        """Complete a pending two-factor authentication challenge.
+    @staticmethod
+    def _adopt_system_id(client: FinTS3PinTanClient, response: Any) -> None:
+        """Take the system id from the sync dialog's TAN-completion response."""
+        seg = response.find_segment_first(HISYN4)
+        if seg is None:
+            raise ValueError(_MSG_NO_SYSTEM_ID)
+        client.system_id = seg.system_id
 
-        For push-TAN / SecureGo+ the user confirms in the banking app and
-        *tan* stays empty string "".  For chip-TAN or SMS-TAN the user
-        provides the numeric TAN string.
+    def complete_tan(
+        self, tan_response: NeedTANResponse, tan: str = ""
+    ) -> NeedTANResponse | None:
+        """Answer a pending SCA challenge and finish what it interrupted.
 
-        :param tan_response: The NeedTANResponse object returned by a
-                             previous call (init_system_id or a data fetch).
-        :param tan: The TAN value, or "" for push/decoupled TANs.
+        For SecureGo+ (decoupled) the user confirms in the app and *tan* stays
+        ``""``; chipTAN / SMS-TAN users pass the TAN string.
 
-        Raises ``AuthRejectedError`` if the bank rejects authentication
-        while completing the TAN challenge (``FinTSClientPINError`` or
-        ``FinTSClientTemporaryAuthError``).
+        Returns ``None`` once the login is complete (accounts cached, dialog
+        closed). Returns a new ``NeedTANResponse`` when more confirmation is
+        needed: the bank has not seen the app confirmation yet (response code
+        3956), or — after a sync dialog — the fresh dialog asks for SCA
+        again. The caller then shows the prompt again and calls this method
+        once more.
+
+        Raises ``AuthRejectedError`` if the bank rejects the authentication.
         """
         client = self._get_client()
         try:
-            try:
-                client.send_tan(tan_response, tan)
-                # After SCA, system-ID is assigned. Cache accounts while the
-                # dialog is still open so the next caller does not re-open
-                # one.
+            result = client.send_tan(tan_response, tan)
+            if isinstance(result, NeedTANResponse):
+                return result
+            client.init_tan_response = None
+            if client.system_id != SYSTEM_ID_UNASSIGNED:
                 self._cached_accounts = client.get_sepa_accounts()
-            finally:
                 self._close_standing_dialog()
+                return None
+            # Sync dialog: Atruvia hands out the system id only with the TAN
+            # completion. A sync dialog is not meant to carry business jobs,
+            # so end it and open a regular one for the account list.
+            self._close_standing_dialog()
+            self._adopt_system_id(client, result)
+            return self._open_dialog_and_cache_accounts(client)
         except (FinTSClientPINError, FinTSClientTemporaryAuthError) as exc:
+            self._close_standing_dialog()
             raise AuthRejectedError(
                 codes=tuple(getattr(client, "observed_error_codes", ()))
             ) from exc
+        except Exception:
+            self._close_standing_dialog()
+            raise
 
     def get_accounts(self) -> list[SEPAAccount]:
         """Return all SEPA accounts accessible with the configured credentials.

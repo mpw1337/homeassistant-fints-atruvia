@@ -391,14 +391,23 @@ class FintsBankingCoordinator(DataUpdateCoordinator[dict]):
         if blob is not None:
             await self._state_store.save(blob)
 
-    async def async_complete_reauth(self, tan: str = "") -> None:
-        """Complete pending re-authentication after the user confirms SecureGo+."""
+    async def async_complete_reauth(self, tan: str = "") -> bool:
+        """Complete pending re-authentication after the user confirms SecureGo+.
+
+        Returns ``False`` if the bank still waits for the app confirmation
+        (``complete_tan`` handed back a follow-up challenge); the 2FA state
+        then stays pending and the button can be pressed again.
+        """
         if self._tan_response is None or self._client is None:
-            return
-        await self.hass.async_add_executor_job(
+            return False
+        follow_up = await self.hass.async_add_executor_job(
             self._client.complete_tan, self._tan_response, tan
         )
+        if follow_up is not None:
+            self._tan_response = follow_up
+            return False
         self._tan_response = None
         self.is_2fa_pending = False
         pn_async_dismiss(self.hass, "fints_atruvia_reauth")
         await self.async_request_refresh()
+        return True

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from homeassistant.exceptions import ConfigEntryAuthFailed
@@ -255,3 +255,35 @@ async def test_config_entry_is_set_via_super_init(hass):
     coordinator = FintsBankingCoordinator(hass, entry)
 
     assert coordinator.config_entry is entry
+
+
+async def test_complete_reauth_keeps_pending_when_bank_still_waits(hass):
+    """complete_tan returning a challenge (3956) must not clear the 2FA state."""
+    coordinator = _make_coordinator(hass, [_IBAN1])
+    first = MagicMock(name="first challenge")
+    pending = MagicMock(name="still pending")
+    coordinator._tan_response = first
+    coordinator.is_2fa_pending = True
+    coordinator._client.complete_tan.return_value = pending
+    coordinator.async_request_refresh = AsyncMock()
+
+    assert await coordinator.async_complete_reauth() is False
+
+    coordinator._client.complete_tan.assert_called_once_with(first, "")
+    assert coordinator.is_2fa_pending is True
+    assert coordinator._tan_response is pending
+    coordinator.async_request_refresh.assert_not_awaited()
+
+
+async def test_complete_reauth_clears_pending_and_refreshes_on_success(hass):
+    coordinator = _make_coordinator(hass, [_IBAN1])
+    coordinator._tan_response = MagicMock(name="challenge")
+    coordinator.is_2fa_pending = True
+    coordinator._client.complete_tan.return_value = None
+    coordinator.async_request_refresh = AsyncMock()
+
+    assert await coordinator.async_complete_reauth() is True
+
+    assert coordinator.is_2fa_pending is False
+    assert coordinator._tan_response is None
+    coordinator.async_request_refresh.assert_awaited_once()
