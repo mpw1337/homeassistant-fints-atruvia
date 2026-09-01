@@ -392,8 +392,9 @@ class FinTsAtruviaClient:
         Returns the SCA challenge if the bank demands one for the sync — the
         dialog then stays open as the client's standing dialog so
         ``send_tan`` continues it — and ``None`` otherwise (dialog ended).
-        python-fints' own ``_ensure_system_id`` is unusable for SCA banks:
-        it ends the dialog before anyone could answer the challenge.
+        python-fints' own ``_ensure_system_id`` is unusable for SCA banks: it
+        ends the dialog before anyone could answer the challenge. A rejected
+        sync is dropped without HKEND — the bank has aborted it already.
         """
         client.init_tan_response = None
         # No public API opens a dialog with an extra HKSYN segment.
@@ -406,9 +407,19 @@ class FinTsAtruviaClient:
             dialog.__enter__()
             client._standing_dialog = dialog  # noqa: SLF001 - see above
             return client.init_tan_response
+        if seg is None:
+            # Rejected sync (9075): the bank has already aborted this dialog
+            # (9800). An HKEND is refused with 9340, which python-fints lists
+            # among the PIN-error codes — it blocks its Password object and
+            # every later signature dies with "Refusing to use PIN after
+            # block" (surfacing as FinTSDialogInitError from the next
+            # dialog.init). Drop the dialog like python-fints does for a 9075
+            # on its standing dialog.
+            dialog.open = False
+            return None
         try:
             dialog.end()
-        except Exception:  # after a rejection the bank has already dropped the dialog
+        except Exception:
             _LOGGER.debug("Ending the sync dialog failed", exc_info=True)
         return None
 

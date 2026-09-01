@@ -190,6 +190,19 @@ def test_init_system_id_one_step_sync_assigns_system_id_and_caches_accounts():
     assert client.get_accounts() == ["acc"]
 
 
+def test_sync_rejected_dialog_is_dropped_without_hkend():
+    """No HISYN, no challenge: drop the dialog instead of sending HKEND."""
+    bank = _Bank()
+    rejected = _Dialog(bank)  # answers neither HISYN nor a challenge
+    bank._sync_dialogs = [rejected]
+
+    result = FinTsAtruviaClient._sync(bank)
+
+    assert result is None
+    assert not rejected.ended
+    assert rejected.open is False
+
+
 def test_init_system_id_repeats_sync_two_step_when_bank_demands_sca():
     """Atruvia fresh install: one-step sync rejected (9075 + 3920), no HISYN.
 
@@ -209,7 +222,10 @@ def test_init_system_id_repeats_sync_two_step_when_bank_demands_sca():
     assert bank.sync_dialogs_opened == [rejected, two_step]
     assert isinstance(rejected.init_segments[0], HKSYN3)
     assert isinstance(two_step.init_segments[0], HKSYN3)
-    assert rejected.ended
+    # The bank aborted the rejected dialog (9800); an HKEND would be refused
+    # with 9340, which python-fints mistakes for a PIN error and blocks the PIN.
+    assert not rejected.ended
+    assert rejected.open is False
     assert not two_step.ended
     assert two_step.entered == 1
     assert bank._standing_dialog is two_step
@@ -232,7 +248,8 @@ def test_init_system_id_raises_no_tan_mechanism_when_sync_rejected_without_two_s
 
     assert exc_info.value.codes == ("3920", "9075")
     assert len(bank.sync_dialogs_opened) == 1
-    assert bank.sync_dialogs_opened[0].ended
+    assert not bank.sync_dialogs_opened[0].ended
+    assert bank.sync_dialogs_opened[0].open is False
     assert bank.standing_dialogs_opened == []
 
 
